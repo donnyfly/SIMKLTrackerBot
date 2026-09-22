@@ -1,16 +1,14 @@
 """
-Minimal async client for the SIMKL API (https://api.simkl.com).
+Minimal async client for the SIMKL API (AUTH V2).
 
-Only implements what this bot needs:
-  - PIN authentication flow (no client secret required)
-  - Fetching "last activity" timestamps
-  - Fetching watched shows / movies / anime, optionally since a date
-  - Fetching basic user info (for display name)
+Uses the Device / PIN flow + automatic token refresh.
 """
 
+import logging
 import aiohttp
 
 API_BASE = "https://api.simkl.com"
+log = logging.getLogger("simkl-bot")
 
 
 class SimklAuthError(Exception):
@@ -26,36 +24,109 @@ class SimklClient:
         headers = {
             "Content-Type": "application/json",
             "simkl-api-key": self.client_id,
+            "User-Agent": "simkl-discord-bot/1.0",
         }
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
-    # ---------- PIN auth flow ----------
+    # ---------- AUTH V2 Device / PIN flow ----------
 
     async def start_pin_auth(self) -> dict:
         """
-        Kicks off the PIN login flow.
-        Returns dict with: user_code, verification_url, expires_in, interval
+        Starts the AUTH V2 device flow.
+        Returns dict with: device_code, user_code, verification_uri, expires_in, interval
         """
-        url = f"{API_BASE}/oauth/pin?client_id={self.client_id}"
+        url = f"{API_BASE}/oauth2/device"
+        data = {
+            "client_id": self.client_id,
+            "scope": "media:read media:write",
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=self._headers()) as resp:
+            async with session.post(
+                url,
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "simkl-discord-bot/1.0",
+                },
+            ) as resp:
                 resp.raise_for_status()
                 return await resp.json()
 
-    async def poll_pin(self, user_code: str) -> str | None:
+    async def poll_pin(self, device_code: str) -> dict | None:
         """
-        Checks whether the user has approved the PIN yet.
-        Returns the access_token once approved, otherwise None.
+        Polls for token approval.
+        Returns {"access_token": ..., "refresh_token": ...} once approved, otherwise None.
         """
-        url = f"{API_BASE}/oauth/pin/{user_code}?client_id={self.client_id}"
+        url = f"{API_BASE}/oauth2/token"
+        data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": self.client_id,
+            "device_code": device_code,
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=self._headers()) as resp:
-                if resp.status != 200:
+            async with session.post(
+                url,
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "simkl-discord-bot/1.0",
+                },
+            ) as resp:
+                text = await resp.text()
+
+                if resp.status == 200:
+                    try:
+                        result = await resp.json()
+                    except Exception:
+                        log.warning("200 response but invalid JSON: %s", text)
+                        return None
+
+                    if "access_token" in result:
+                        return {
+                            "access_token": result["access_token"],
+                            "refresh_token": result.get("refresh_token"),
+                        }
+                    log.warning("200 response but no access_token: %s", text)
                     return None
-                data = await resp.json()
-                return data.get("access_token")
+
+                # Pending or error
+                try:
+                    err = await resp.json()
+                    error = err.get("error", "")
+                    if error in ("authorization_pending", "slow_down"):
+                        return None  # normal, keep polling
+                    log.warning("Token poll error %s: %s", resp.status, text)
+                except Exception:
+                    log.warning("Token poll non-JSON %s: %s", resp.status, text)
+                return None
+
+    async def refresh_token(self, refresh_token: str) -> dict | None:
+        """Exchange a refresh_token for a new access_token + refresh_token."""
+        url = f"{API_BASE}/oauth2/token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "refresh_token": refresh_token,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "simkl-discord-bot/1.0",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    log.warning("Refresh failed %s: %s", resp.status, await resp.text())
+                    return None
+                result = await resp.json()
+                return {
+                    "access_token": result["access_token"],
+                    "refresh_token": result.get("refresh_token", refresh_token),
+                }
 
     # ---------- Authenticated calls ----------
 
@@ -69,7 +140,6 @@ class SimklClient:
                 return await resp.json()
 
     async def get_activities(self, token: str) -> dict:
-        """Returns latest-change timestamps per media type/category."""
         url = f"{API_BASE}/sync/activities"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=self._headers(token)) as resp:
@@ -79,11 +149,6 @@ class SimklClient:
                 return await resp.json()
 
     async def get_all_items(self, token: str, media_type: str, date_from: str | None = None) -> list:
-        """
-        media_type: 'shows', 'movies', or 'anime'
-        date_from: ISO 8601 timestamp string, or None for the full library
-        Returns a list of library entries for that type.
-        """
         url = f"{API_BASE}/sync/all-items/{media_type}?extended=full&episode_watched_at=yes"
         if date_from:
             url += f"&date_from={date_from}"
@@ -93,7 +158,6 @@ class SimklClient:
                     raise SimklAuthError("Token invalid or revoked")
                 resp.raise_for_status()
                 data = await resp.json()
-                # The API nests results under the type name, e.g. {"shows": [...]}
                 if isinstance(data, dict):
                     return data.get(media_type, [])
                 return data or []

@@ -1,6 +1,7 @@
 """
-SIMKL Watch Activity Tracker for Discord.
+SIMKL Watch Activity Tracker for Discord (AUTH V2)
 
+<<<<<<< HEAD
 Posts nice embeds like:
     donny's Activity
     watched S02E02 of Ted Lasso
@@ -8,6 +9,12 @@ Posts nice embeds like:
 
 Uses smart polling: checks /sync/activities first (cheap),
 only fetches full data when something actually changed.
+=======
+- Uses AUTH V2 Device / PIN flow
+- Automatic token refresh
+- Smart polling via /sync/activities
+- Nice embeds with posters + clickable titles
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
 """
 
 import os
@@ -26,7 +33,7 @@ load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SIMKL_CLIENT_ID = os.getenv("SIMKL_CLIENT_ID")
-GUILD_ID = os.getenv("GUILD_ID")  # optional, speeds up slash command sync during setup
+GUILD_ID = os.getenv("GUILD_ID")
 
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit(
@@ -83,23 +90,53 @@ def is_admin(interaction: discord.Interaction) -> bool:
 
 
 def simkl_poster_url(poster_path: str | None) -> str | None:
-    """Build a usable poster URL from the path SIMKL returns."""
     if not poster_path:
         return None
     return f"https://wsrv.nl/?url=https://simkl.in/posters/{poster_path}_c.webp&q=90"
 
 
 def simkl_title_url(media_type: str, simkl_id, slug: str | None = None) -> str:
-    """Build a link to the title on simkl.com"""
     if media_type == "movies":
         base = "https://simkl.com/movies"
     elif media_type == "anime":
         base = "https://simkl.com/anime"
-    else:  # shows
+    else:
         base = "https://simkl.com/tv"
     if slug:
         return f"{base}/{simkl_id}/{slug}"
     return f"{base}/{simkl_id}"
+
+
+async def get_valid_token(discord_user_id: str, user_data: dict) -> str:
+    """Return a working access token. Refresh if necessary."""
+    access = user_data.get("simkl_token")
+    refresh = user_data.get("refresh_token")
+
+    if not access:
+        raise SimklAuthError("No access token stored")
+
+    # Quick test – if it works we just return it
+    try:
+        await simkl.get_activities(access)
+        return access
+    except SimklAuthError:
+        pass
+
+    # Need to refresh
+    if not refresh:
+        raise SimklAuthError("Token expired and no refresh_token available")
+
+    new_tokens = await simkl.refresh_token(refresh)
+    if not new_tokens:
+        raise SimklAuthError("Refresh failed – user needs to /simkl-link again")
+
+    await storage.update_tokens(
+        discord_user_id,
+        new_tokens["access_token"],
+        new_tokens.get("refresh_token"),
+    )
+    log.info("Refreshed token for user %s", discord_user_id)
+    return new_tokens["access_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +155,8 @@ async def simkl_link(interaction: discord.Interaction):
         return
 
     user_code = pin_data["user_code"]
-    verification_url = pin_data.get("verification_url", "https://simkl.com/pin")
+    device_code = pin_data["device_code"]
+    verification_url = pin_data.get("verification_uri", "https://simkl.com/pin")
     expires_in = pin_data.get("expires_in", 900)
     interval = pin_data.get("interval", 5)
 
@@ -136,12 +174,15 @@ async def simkl_link(interaction: discord.Interaction):
         await asyncio.sleep(interval)
         elapsed += interval
         try:
-            token = await simkl.poll_pin(user_code)
+            tokens = await simkl.poll_pin(device_code)
         except Exception:
             continue
-        if token:
+        if tokens:
+            access_token = tokens["access_token"]
+            refresh_token = tokens.get("refresh_token")
+
             try:
-                settings = await simkl.get_user_settings(token)
+                settings = await simkl.get_user_settings(access_token)
                 simkl_username = (
                     settings.get("user", {}).get("name")
                     or settings.get("account", {}).get("id")
@@ -150,7 +191,13 @@ async def simkl_link(interaction: discord.Interaction):
             except Exception:
                 simkl_username = "SIMKL user"
 
-            await storage.link_user(discord_user_id, token, simkl_username, now_iso())
+            await storage.link_user(
+                discord_user_id,
+                access_token,
+                refresh_token,
+                simkl_username,
+                now_iso(),
+            )
             try:
                 await interaction.user.send(
                     f"✅ Linked! Your SIMKL account (**{simkl_username}**) is now connected. "
@@ -250,7 +297,9 @@ async def poll_all_users():
 
 
 async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: str, user_data: dict):
-    token = user_data["simkl_token"]
+    # Get a valid (possibly refreshed) token
+    token = await get_valid_token(discord_user_id, user_data)
+
     last_checked = user_data.get("last_checked", {})
 
     try:
@@ -260,14 +309,21 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
         display_name = "Someone"
         member = None
 
+<<<<<<< HEAD
     # --- Smart gate: only fetch full data if activities show a change ---
+=======
+    # Smart gate
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
     try:
         activities = await simkl.get_activities(token)
     except Exception:
         log.exception("Failed to get activities for user %s", discord_user_id)
         return
 
+<<<<<<< HEAD
     # Map our media_type → activities key
+=======
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
     type_map = {
         "shows": "tv_shows",
         "anime": "anime",
@@ -278,16 +334,24 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
         since = last_checked.get(media_type, "1970-01-01T00:00:00Z")
         since_dt = parse_iso(since)
 
+<<<<<<< HEAD
         # Check if this type has any newer activity
+=======
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
         act_key = type_map[media_type]
         act_all = (activities.get(act_key) or {}).get("all")
         if act_all:
             act_dt = parse_iso(act_all)
             if act_dt <= since_dt:
+<<<<<<< HEAD
                 # Nothing new for this type → skip the expensive call
                 continue
 
         # Something may have changed → fetch the details
+=======
+                continue
+
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
         items = await simkl.get_all_items(token, media_type, date_from=since)
         newest_seen = since_dt
         announce_keys = []
@@ -331,11 +395,15 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
                         embed = discord.Embed(
                             description=description,
                             color=0x1ABC9C,
+<<<<<<< HEAD
                             timestamp=watched_dt
+=======
+                            timestamp=watched_dt,
+>>>>>>> fe38df1 (Upgrade to AUTH V2 + smart polling + better embeds)
                         )
                         embed.set_author(
                             name=f"{display_name}'s Activity",
-                            icon_url=member.display_avatar.url if member and hasattr(member, "display_avatar") else None
+                            icon_url=member.display_avatar.url if member and hasattr(member, "display_avatar") else None,
                         )
                         if poster_url:
                             embed.set_thumbnail(url=poster_url)
@@ -344,7 +412,7 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
                         try:
                             await channel.send(embed=embed)
                         except Exception:
-                            log.exception("Failed to send embed to channel")
+                            log.exception("Failed to send embed")
 
             else:  # movie
                 movie = item.get("movie") or {}
@@ -373,11 +441,11 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
                 embed = discord.Embed(
                     description=description,
                     color=0x1ABC9C,
-                    timestamp=watched_dt
+                    timestamp=watched_dt,
                 )
                 embed.set_author(
                     name=f"{display_name}'s Activity",
-                    icon_url=member.display_avatar.url if member and hasattr(member, "display_avatar") else None
+                    icon_url=member.display_avatar.url if member and hasattr(member, "display_avatar") else None,
                 )
                 if poster_url:
                     embed.set_thumbnail(url=poster_url)
@@ -386,7 +454,7 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
                 try:
                     await channel.send(embed=embed)
                 except Exception:
-                    log.exception("Failed to send embed to channel")
+                    log.exception("Failed to send embed")
 
         if announce_keys:
             await storage.add_announced(discord_user_id, announce_keys)

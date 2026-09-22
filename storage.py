@@ -1,23 +1,6 @@
 """
 Tiny JSON-file storage. No database required.
-
-Data shape (data/store.json):
-{
-    "channel_id": 123456789012345678,
-    "poll_interval_minutes": 5,
-    "users": {
-        "<discord_user_id>": {
-            "simkl_token": "...",
-            "simkl_username": "...",
-            "last_checked": {
-                "shows": "2026-09-01T00:00:00Z",
-                "movies": "2026-09-01T00:00:00Z",
-                "anime": "2026-09-01T00:00:00Z"
-            },
-            "announced": ["shows:12345:1:2", "movies:6789", ...]
-        }
-    }
-}
+Now stores both access_token and refresh_token for AUTH V2.
 """
 
 import json
@@ -34,7 +17,6 @@ _DEFAULT = {
     "users": {},
 }
 
-# Cap how many "announced" keys we remember per user, so the file doesn't grow forever.
 MAX_ANNOUNCED_PER_USER = 300
 
 
@@ -57,8 +39,6 @@ def _save(data: dict) -> None:
 
 
 class Storage:
-    """Thin async wrapper so bot.py never touches the file directly."""
-
     async def get_all(self) -> dict:
         async with _lock:
             return _load()
@@ -75,11 +55,12 @@ class Storage:
             data["poll_interval_minutes"] = minutes
             _save(data)
 
-    async def link_user(self, discord_user_id: str, simkl_token: str, simkl_username: str, start_time_iso: str) -> None:
+    async def link_user(self, discord_user_id: str, access_token: str, refresh_token: str | None, simkl_username: str, start_time_iso: str) -> None:
         async with _lock:
             data = _load()
             data["users"][discord_user_id] = {
-                "simkl_token": simkl_token,
+                "simkl_token": access_token,
+                "refresh_token": refresh_token,
                 "simkl_username": simkl_username,
                 "last_checked": {
                     "shows": start_time_iso,
@@ -89,6 +70,15 @@ class Storage:
                 "announced": [],
             }
             _save(data)
+
+    async def update_tokens(self, discord_user_id: str, access_token: str, refresh_token: str | None) -> None:
+        async with _lock:
+            data = _load()
+            if discord_user_id in data["users"]:
+                data["users"][discord_user_id]["simkl_token"] = access_token
+                if refresh_token:
+                    data["users"][discord_user_id]["refresh_token"] = refresh_token
+                _save(data)
 
     async def unlink_user(self, discord_user_id: str) -> bool:
         async with _lock:
@@ -112,7 +102,6 @@ class Storage:
             if discord_user_id in data["users"]:
                 existing = data["users"][discord_user_id].get("announced", [])
                 existing.extend(keys)
-                # Keep only the most recent N to bound file size
                 data["users"][discord_user_id]["announced"] = existing[-MAX_ANNOUNCED_PER_USER:]
                 _save(data)
 
