@@ -6,7 +6,8 @@ Posts nice embeds like:
     watched S02E02 of Ted Lasso
     (with poster + clickable title)
 
-See README.md for full setup instructions.
+Uses smart polling: checks /sync/activities first (cheap),
+only fetches full data when something actually changed.
 """
 
 import os
@@ -85,7 +86,6 @@ def simkl_poster_url(poster_path: str | None) -> str | None:
     """Build a usable poster URL from the path SIMKL returns."""
     if not poster_path:
         return None
-    # _c = compact portrait size, good for embeds
     return f"https://wsrv.nl/?url=https://simkl.in/posters/{poster_path}_c.webp&q=90"
 
 
@@ -224,7 +224,7 @@ async def simkl_checknow(interaction: discord.Interaction):
 
 
 # ---------------------------------------------------------------------------
-# Polling logic
+# Polling logic (smart version)
 # ---------------------------------------------------------------------------
 
 async def poll_all_users():
@@ -260,10 +260,34 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
         display_name = "Someone"
         member = None
 
+    # --- Smart gate: only fetch full data if activities show a change ---
+    try:
+        activities = await simkl.get_activities(token)
+    except Exception:
+        log.exception("Failed to get activities for user %s", discord_user_id)
+        return
+
+    # Map our media_type → activities key
+    type_map = {
+        "shows": "tv_shows",
+        "anime": "anime",
+        "movies": "movies",
+    }
+
     for media_type, kind in (("shows", "show"), ("anime", "show"), ("movies", "movie")):
         since = last_checked.get(media_type, "1970-01-01T00:00:00Z")
         since_dt = parse_iso(since)
 
+        # Check if this type has any newer activity
+        act_key = type_map[media_type]
+        act_all = (activities.get(act_key) or {}).get("all")
+        if act_all:
+            act_dt = parse_iso(act_all)
+            if act_dt <= since_dt:
+                # Nothing new for this type → skip the expensive call
+                continue
+
+        # Something may have changed → fetch the details
         items = await simkl.get_all_items(token, media_type, date_from=since)
         newest_seen = since_dt
         announce_keys = []
@@ -296,7 +320,6 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
                         ep_title = ep.get("title")
                         ep_label = f"S{season_num:02d}E{ep_num:02d}" if season_num is not None and ep_num is not None else "an episode"
 
-                        # ---- Build nice embed ----
                         title_url = simkl_title_url(media_type, simkl_id, slug)
                         poster_url = simkl_poster_url(poster)
 
@@ -307,7 +330,7 @@ async def poll_single_user(channel: discord.abc.Messageable, discord_user_id: st
 
                         embed = discord.Embed(
                             description=description,
-                            color=0x1ABC9C,          # nice teal colour
+                            color=0x1ABC9C,
                             timestamp=watched_dt
                         )
                         embed.set_author(
