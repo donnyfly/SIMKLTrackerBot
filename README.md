@@ -2,8 +2,9 @@
 
 Posts messages like:
 
-> **Don** watched **S01E03 - "The Rogue Prince"** of **House of the Dragon**
-> **Don** watched the movie **Dune: Part Two**
+> **Username** watched **S01E03 - "The Rogue Prince"** of **House of the Dragon**
+
+> **Username** watched the movie **Dune: Part Two**
 
 Each person links their own SIMKL account with one command. The bot then checks
 SIMKL every few minutes and posts anything new to a channel you choose.
