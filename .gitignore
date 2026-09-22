@@ -1,0 +1,13 @@
+# Secrets – never upload these
+.env
+data/store.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# System
+.DS_Store
+*.log
