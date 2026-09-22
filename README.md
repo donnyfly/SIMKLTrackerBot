@@ -4,7 +4,7 @@ A self-hosted Discord bot that automatically posts your SIMKL watch activity in 
 
 ### Example output
 
-<img width="196" height="96" alt="simkldiscordbotsample" src="https://github.com/user-attachments/assets/6acdb1f2-c764-4919-8048-3ea45f96bc5b" />
+<img width="400" height="" alt="simkldiscordbotsample" src="https://github.com/user-attachments/assets/6acdb1f2-c764-4919-8048-3ea45f96bc5b" />
 
 *(The bot posts messages that look like this — with your Discord name, poster, clickable title, and episode number)*
 
