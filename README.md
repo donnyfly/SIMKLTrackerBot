@@ -1,115 +1,127 @@
 # SIMKL Watch Activity Tracker for Discord
 
-Posts messages like:
+A self-hosted Discord bot that automatically posts your SIMKL watch activity in a clean, modern embed style.
 
-> **Username** watched **S01E03 - "The Rogue Prince"** of **House of the Dragon**
+### Example output
 
-> **Username** watched the movie **Dune: Part Two**
+<img width="196" height="96" alt="simkldiscordbotsample" src="https://github.com/user-attachments/assets/6acdb1f2-c764-4919-8048-3ea45f96bc5b" />
 
-Each person links their own SIMKL account with one command. The bot then checks
-SIMKL every few minutes and posts anything new to a channel you choose.
-
-No coding knowledge needed — just follow the steps below in order.
+*(The bot posts messages that look like this — with your Discord name, poster, clickable title, and episode number)*
 
 ---
 
-## What you'll need
+## Features
 
-- A computer (Windows, Mac, or Linux) or a VPS that can stay on while the bot runs
-- A Discord account where you can create a bot application
-- A free SIMKL account
-
----
-
-## Step 1 — Install Python
-
-1. Go to https://www.python.org/downloads/ and download **Python 3.11 or newer**.
-2. Run the installer.
-   - **Windows:** on the first screen, check the box **"Add python.exe to PATH"** before clicking Install.
-   - **Mac:** just run the installer normally.
-3. To check it worked, open a terminal (Command Prompt/PowerShell on Windows, Terminal on Mac) and type:
-   ```
-   python --version
-   ```
-   You should see something like `Python 3.11.x`. (On Mac, you may need to type `python3` instead of `python`.)
+- Beautiful Discord embeds with poster thumbnails
+- Clickable title that links directly to the show/movie on SIMKL
+- Supports **TV Shows**, **Anime**, and **Movies**
+- Each user links their own SIMKL account with one simple command
+- Admin commands to set the channel and force a check
+- Runs completely on your own server (no third-party hosting required)
+- Lightweight – uses a simple JSON file for storage
 
 ---
 
-## Step 2 — Create the Discord bot
+## What you’ll need
 
-1. Go to https://discord.com/developers/applications and click **New Application**. Name it anything (e.g. "SIMKL Tracker").
-2. In the left sidebar, click **Bot**.
-   - Click **Reset Token** (or **View Token**) and copy the token somewhere safe. You'll paste it into this project in Step 4. **Never share this token with anyone.**
-3. Still on the Bot page, scroll down and make sure **Public Bot** is OFF (unless you want other servers to add it too).
-4. In the left sidebar, click **OAuth2 → URL Generator**.
-   - Under **Scopes**, check `bot` and `applications.commands`.
-   - Under **Bot Permissions**, check `Send Messages` and `Read Message History`.
-   - Copy the generated URL at the bottom, paste it into your browser, and invite the bot to your server.
+- A computer or VPS that can stay online (Ubuntu recommended)
+- A Discord account + a server where you can add bots
+- A free [SIMKL](https://simkl.com) account
 
 ---
 
-## Step 3 — Create a SIMKL app (for the API connection)
+## Quick Setup Guide
 
-1. Log in at https://simkl.com and go to https://simkl.com/settings/developer
-2. Click to create a new app.
-   - **Redirect URI:** you can put `urn:ietf:wg:oauth:2.0:oob` — it isn't actually used by this bot.
-3. Copy the **Client ID** shown for your app. You'll paste it into this project in Step 4.
-   - You do **not** need the Client Secret for this bot.
+### 1. Create the Discord Bot
 
----
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
+2. Go to the **Bot** tab → Reset Token → copy the token
+3. Under **OAuth2 → URL Generator**:
+   - Scopes: `bot` + `applications.commands`
+   - Permissions: `Send Messages` + `Read Message History`
+4. Copy the generated URL and invite the bot to your server
 
-## Step 4 — Configure the bot
+### 2. Create a SIMKL App
 
-1. Download the project files (the ones shared in this chat) into a folder on your computer, e.g. `simkl-discord-bot`.
-2. Inside that folder, make a copy of `.env.example` and rename the copy to `.env`.
-3. Open `.env` in any text editor and fill in:
-   ```
-   DISCORD_BOT_TOKEN=paste your bot token here
-   SIMKL_CLIENT_ID=paste your SIMKL client ID here
-   GUILD_ID=your Discord server's ID (optional but recommended while testing)
-   ```
-   To get your server's ID: in Discord, go to **User Settings → Advanced → Enable Developer Mode**, then right-click your server's icon and choose **Copy Server ID**.
+1. Go to [SIMKL Developer Settings](https://simkl.com/settings/developer)
+2. Create a new application
+3. Redirect URI: `urn:ietf:wg:oauth:2.0:oob`
+4. Copy the **Client ID** (you do **not** need the Client Secret)
 
----
+### 3. Download & Configure the Bot
 
-## Step 5 — Install dependencies and run the bot
-
-Open a terminal, navigate into the project folder, then run:
-
+```bash
+git clone https://github.com/donnyfly/simkl-tracker-discord-bot.git
+cd simkl-tracker-discord-bot
 ```
+Copy the example environment file:
+```bash
+cp .env.example .env
+nano .env
+```
+Fill in your values:
+```bash
+DISCORD_BOT_TOKEN=your_bot_token_here
+SIMKL_CLIENT_ID=your_simkl_client_id_here
+GUILD_ID=your_server_id_here          # optional but recommended
+```
+
+### 4. Install & Run
+```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 python bot.py
 ```
+You should see: `Logged in as SIMKL Tracker#xxxx`
 
-(On Mac/Linux you may need `pip3` and `python3` instead.)
+### 5. Set it up in Discord
 
-If everything is set up correctly, you'll see a line like `Logged in as SIMKL Tracker#1234`.
-**Leave this terminal window open** — the bot only runs while this is running. To stop it, press `Ctrl+C`.
+1. Run `/simkl-setchannel` in the channel where you want activity posted
+2. Each person runs `/simkl-link` and follows the PIN instructions
 
-> **Keeping it running long-term:** for a first test, running it in a terminal is fine.
-> To keep it running permanently on a Windows/Mac computer, just leave the terminal open (or the
-> computer awake). On a VPS, look into `tmux`, `screen`, or a `systemd` service so it keeps running
-> after you disconnect.
+That’s it! The bot will now post new watches automatically.
 
 ---
 
-## Step 6 — Set it up in Discord
+### Keeping it running (Ubuntu)
+Create a systemd service so the bot starts automatically after reboot:
+```bash
+sudo nano /etc/systemd/system/simkl-bot.service
+```
+Paste (replace `your_username`):
+```
+[Unit]
+Description=SIMKL Discord Watch Activity Bot
+After=network.target
 
-In your server, run these slash commands:
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/home/your_username/simkl-tracker-discord-bot
+ExecStart=/home/your_username/simkl-tracker-discord-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
 
-1. **`/simkl-setchannel`** — run this in the channel where you want watch activity posted.
-   (Requires the "Manage Server" permission.)
-2. Each person who wants their activity tracked runs **`/simkl-link`**.
-   - The bot will reply privately with a short code and a link (simkl.com/pin).
-   - Go to that link, log into SIMKL if needed, and enter the code.
-   - The bot will DM you a confirmation once it's linked. This usually takes a few seconds.
-
-That's it — the bot checks for new activity every 5 minutes by default and posts it to your chosen channel.
-
+[Install]
+WantedBy=multi-user.target
+```
+Then enable it:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable simkl-bot
+sudo systemctl start simkl-bot
+```
+Useful commands:
+```bash
+sudo systemctl status simkl-bot     # check status
+sudo systemctl restart simkl-bot    # restart
+journalctl -u simkl-bot -f          # live logs
+```
 ---
 
-## Commands reference
-
+## Commands
 | Command | Who can use it | What it does |
 |---|---|---|
 | `/simkl-link` | Anyone | Links your own SIMKL account |
@@ -120,31 +132,14 @@ That's it — the bot checks for new activity every 5 minutes by default and pos
 
 ---
 
-## Adjusting the check frequency
-
-By default the bot checks every 5 minutes. To change it, open `data/store.json` after running
-the bot at least once, and change `"poll_interval_minutes"`. Restart the bot afterward.
+## Notes
+- The bot only posts activity that happens after a user links their account.
+- Posters and links are pulled live from SIMKL.
+- All tokens are stored locally in `data/store.json` and never leave your server.
 
 ---
 
 ## Troubleshooting
-
-- **Slash commands don't show up in Discord:** if you didn't set `GUILD_ID` in `.env`, Discord can
-  take up to an hour to show new global commands. Setting `GUILD_ID` makes them appear instantly.
-- **"Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID"**: double check your `.env` file is named exactly
-  `.env` (not `.env.txt`) and both values are filled in.
-- **A linked user's activity stops posting:** their SIMKL authorization may have been revoked. Ask
-  them to run `/simkl-link` again.
-- **Nothing posts even though someone watched something:** run `/simkl-checknow` to force an
-  immediate check rather than waiting for the next automatic cycle.
-
----
-
-## How it works (optional reading)
-
-- Each linked user's SIMKL access token is stored locally in `data/store.json` — never sent anywhere
-  except to SIMKL's own API.
-- Every poll cycle, the bot asks SIMKL for each user's shows/movies/anime updated since the last
-  check, compares watched timestamps, and posts anything new — then remembers what it already
-  announced so nothing gets posted twice.
-- No central database or hosting service is required; it's a single always-running Python process.
+- Slash commands don’t appear → Make sure you set `GUILD_ID` in `.env` and restarted the bot.
+- Nothing is being posted → Run `/simkl-checknow` and check the logs with `journalctl -u simkl-bot -f`.
+- Token invalid → The user should run `/simkl-link` again.
