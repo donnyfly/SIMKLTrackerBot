@@ -242,7 +242,11 @@ class SimklClient:
         Without it, the user's full history is returned (used once per
         user to record what they had already watched).
         """
-        params = self._params(extended="full", episode_watched_at="yes")
+        # Anime needs the additional season mapping because SIMKL stores
+        # seasonal anime as separate entries but the bot should display
+        # their normal TVDB/American-style season number (S01, S02, etc.).
+        extended = "full_anime_seasons" if media_type == "anime" else "full"
+        params = self._params(extended=extended, episode_watched_at="yes")
         if date_from:
             params["date_from"] = date_from
 
