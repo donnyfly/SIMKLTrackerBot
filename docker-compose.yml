@@ -6,4 +6,4 @@ services:
     env_file:
       - .env
     volumes:
-      - ./storage.json:/app/storage.json
+      - ./data:/app/data
