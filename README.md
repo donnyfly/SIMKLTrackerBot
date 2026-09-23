@@ -4,8 +4,7 @@ A self-hosted Discord bot that monitors your SIMKL watch activity and posts new 
 
 The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh, clickable SIMKL titles, posters, consecutive episode grouping, and persistent local storage.
 
-<img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/784cfbb9-5959-408d-881d-43c04b22e9df" />
-
+<img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/1bfa8fcf-a2cc-42e4-b6ea-8bcfe4590fb8" />
 
 ## Features
 
@@ -74,7 +73,7 @@ The bot needs permission to:
 
 Generate the invite URL and invite the bot to your Discord server.
 
-> The administrator commands use Discord's **Manage Server** permission.
+> The administrator commands use the **Manage Server** permission.
 
 ---
 
@@ -281,7 +280,14 @@ To update the image:
 sudo docker pull ghcr.io/donnyfly/simkltrackerbot:latest
 ```
 
-Then recreate the container using the same `docker run` command.
+Then stop and remove the existing container:
+
+```bash
+sudo docker stop simkltrackerbot
+sudo docker rm simkltrackerbot
+```
+
+Recreate it using the same `docker run` command above.
 
 ---
 
@@ -323,10 +329,8 @@ git --version
 
 ## Clone the repository
 
-Clone the repository from GitHub and enter the project directory:
-
 ```powershell
-git clone <repository-url>
+git clone https://github.com/donnyfly/SIMKLTrackerBot.git
 cd SIMKLTrackerBot
 ```
 
@@ -429,7 +433,7 @@ If you do not want to use Docker, the bot can be run directly with Python on Lin
 ## Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/donnyfly/SIMKLTrackerBot.git
 cd SIMKLTrackerBot
 ```
 
@@ -860,7 +864,7 @@ sudo docker rm simkltrackerbot
 
 Recreate it using the same `docker run` command from the Docker CLI installation section.
 
-## Manual Python
+## Manual Python — Linux/macOS
 
 Pull the latest code:
 
@@ -921,7 +925,7 @@ python bot.py
 Clone the repository:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/donnyfly/SIMKLTrackerBot.git
 cd SIMKLTrackerBot
 ```
 
