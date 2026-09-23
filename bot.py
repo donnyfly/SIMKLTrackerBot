@@ -5,7 +5,7 @@ Features:
 - Uses AUTH V2 Device / PIN flow
 - Automatic token refresh
 - Smart polling via /sync/activities
-- 5-minute polling by default
+- 10-minute polling by default
 - Groups consecutive watched episodes into ranges
 - Minimal original-style Discord embeds
 - Posters + clickable SIMKL titles
@@ -35,6 +35,16 @@ load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SIMKL_CLIENT_ID = os.getenv("SIMKL_CLIENT_ID")
 GUILD_ID = os.getenv("GUILD_ID")
+
+# How often SIMKL activity is checked.
+# Recommended default: 10 minutes.
+try:
+    POLL_INTERVAL_MINUTES = max(
+        int(os.getenv("POLL_INTERVAL_MINUTES", "10")),
+        1,
+    )
+except ValueError:
+    POLL_INTERVAL_MINUTES = 10
 
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit(
@@ -349,25 +359,27 @@ async def get_valid_token(
         "simkl_token"
     )
 
-    refresh_token = user_data.get(
-        "refresh_token"
-    )
-
     if not access_token:
         raise SimklAuthError(
             "No SIMKL access token stored."
         )
 
-    try:
+    # Do NOT make an extra /sync/activities request here.
+    #
+    # The actual activity check in poll_single_user() is also capable of
+    # detecting an expired token. If authentication fails there, the token
+    # will be refreshed and the activity request retried.
+    return access_token
 
-        await simkl.get_activities(
-            access_token
-        )
 
-        return access_token
+async def refresh_user_token(
+    discord_user_id: str,
+    user_data: dict,
+) -> str:
 
-    except SimklAuthError:
-        pass
+    refresh_token = user_data.get(
+        "refresh_token"
+    )
 
     if not refresh_token:
 
@@ -386,20 +398,40 @@ async def get_valid_token(
             "SIMKL token refresh failed."
         )
 
+    new_access_token = new_tokens.get(
+        "access_token"
+    )
+
+    if not new_access_token:
+
+        raise SimklAuthError(
+            "SIMKL token refresh returned "
+            "no access token."
+        )
+
+    new_refresh_token = new_tokens.get(
+        "refresh_token"
+    )
+
     await storage.update_tokens(
         discord_user_id,
-        new_tokens["access_token"],
-        new_tokens.get(
-            "refresh_token"
-        ),
+        new_access_token,
+        new_refresh_token,
     )
+
+    # Keep the in-memory user data current for the rest of this polling
+    # cycle and future operations using this object.
+    user_data["simkl_token"] = new_access_token
+
+    if new_refresh_token:
+        user_data["refresh_token"] = new_refresh_token
 
     log.info(
         "Refreshed SIMKL token for user %s.",
         discord_user_id,
     )
 
-    return new_tokens["access_token"]
+    return new_access_token
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +755,7 @@ async def simkl_status(
     await interaction.response.send_message(
         f"**Posting channel:** {channel_text}\n"
         f"**Poll interval:** every "
-        f"{data.get('poll_interval_minutes', 5)} minute(s)\n\n"
+        f"{POLL_INTERVAL_MINUTES} minute(s)\n\n"
         f"**Linked accounts:**\n"
         f"{users_text}",
         ephemeral=True,
@@ -1321,6 +1353,9 @@ async def poll_single_user(
 
     # -----------------------------------------------------------------------
     # Check SIMKL activities
+    #
+    # This is now the ONLY /sync/activities request made during a normal
+    # polling cycle.
     # -----------------------------------------------------------------------
 
     try:
@@ -1328,6 +1363,42 @@ async def poll_single_user(
         activities = await simkl.get_activities(
             token
         )
+
+    except SimklAuthError:
+
+        # The activity request itself tells us whether the token is still
+        # valid. If it isn't, refresh it and retry the SAME request.
+        try:
+
+            token = await refresh_user_token(
+                discord_user_id,
+                user_data,
+            )
+
+            activities = await simkl.get_activities(
+                token
+            )
+
+        except SimklAuthError:
+
+            log.warning(
+                "SIMKL authentication failed "
+                "for user %s after token refresh. "
+                "They may need to /simkl-link again.",
+                discord_user_id,
+            )
+
+            return
+
+        except Exception:
+
+            log.exception(
+                "Failed to refresh SIMKL token "
+                "or retry activities for user %s.",
+                discord_user_id,
+            )
+
+            return
 
     except Exception:
 
@@ -1387,9 +1458,8 @@ async def poll_single_user(
         # -------------------------------------------------------------------
         # Nothing changed.
         #
-        # This is especially important for /simkl-checknow:
-        # if SIMKL hasn't changed since the last successful check,
-        # absolutely nothing is fetched or posted.
+        # If SIMKL hasn't changed since the last successful check,
+        # absolutely nothing else is requested.
         # -------------------------------------------------------------------
 
         if activity_dt <= since_dt:
@@ -1418,6 +1488,35 @@ async def poll_single_user(
                 media_type,
                 date_from=since,
             )
+
+        except SimklAuthError:
+
+            # In case the token expires between /sync/activities and the
+            # incremental sync request, refresh once and retry.
+            try:
+
+                token = await refresh_user_token(
+                    discord_user_id,
+                    user_data,
+                )
+
+                items = await simkl.get_all_items(
+                    token,
+                    media_type,
+                    date_from=since,
+                )
+
+            except Exception:
+
+                log.exception(
+                    "Failed to refresh token or fetch "
+                    "%s for user %s.",
+                    media_type,
+                    discord_user_id,
+                )
+
+                # Do NOT advance the checkpoint if the sync failed.
+                continue
 
         except Exception:
 
@@ -1576,6 +1675,11 @@ async def on_ready():
         bot.user,
     )
 
+    log.info(
+        "SIMKL polling interval: every %d minute(s).",
+        POLL_INTERVAL_MINUTES,
+    )
+
     if not poll_task_started:
 
         poll_task_started = True
@@ -1591,13 +1695,6 @@ async def polling_loop():
 
     while not bot.is_closed():
 
-        data = await storage.get_all()
-
-        interval_minutes = data.get(
-            "poll_interval_minutes",
-            5,
-        )
-
         try:
 
             await poll_all_users()
@@ -1609,10 +1706,7 @@ async def polling_loop():
             )
 
         await asyncio.sleep(
-            max(
-                interval_minutes,
-                1,
-            ) * 60
+            POLL_INTERVAL_MINUTES * 60
         )
 
 
