@@ -1,0 +1,9 @@
+services:
+  simkltrackerbot:
+    build: .
+    container_name: simkltrackerbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./storage.json:/app/storage.json
