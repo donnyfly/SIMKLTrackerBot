@@ -6,13 +6,12 @@ SIMKL API client for the Discord watch activity bot.
 - Reuses a single aiohttp session for all API requests
 - Identifies the application with app-name and app-version
 - Returns token expiry information for proactive refresh
-- Keeps the existing interface used by bot.py
 """
 
+import json
 import logging
 
 import aiohttp
-
 
 API_BASE = "https://api.simkl.com"
 
@@ -21,12 +20,28 @@ APP_VERSION = "1.0.0"
 
 USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 
+FORM_HEADERS = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "User-Agent": USER_AGENT,
+}
+
 log = logging.getLogger("simkl-bot")
 
 
 class SimklAuthError(Exception):
-    """Raised when a stored token is no longer valid."""
-    pass
+    """Raised when a stored token is no longer valid, or a PIN was refused."""
+
+
+class SimklSlowDown(Exception):
+    """Raised when SIMKL asks the PIN poller to poll less often."""
+
+
+def _parse_json(text: str):
+    """Parse a JSON body, returning None if it isn't valid JSON."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
 class SimklClient:
@@ -35,67 +50,80 @@ class SimklClient:
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """
-        Return the shared HTTP session.
-
-        A single session is reused for all SIMKL requests instead of
-        creating a new TCP/TLS connection for every request.
-        """
-
+        """Return the shared HTTP session, creating it if needed."""
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-
             self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers={
-                    "User-Agent": USER_AGENT,
-                },
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={"User-Agent": USER_AGENT},
             )
-
         return self._session
 
     async def close(self) -> None:
         """Close the shared HTTP session."""
-
         if self._session is not None and not self._session.closed:
             await self._session.close()
-
         self._session = None
 
-    def _headers(
-        self,
-        token: str | None = None,
-    ) -> dict:
+    def _headers(self, token: str | None = None) -> dict:
         """Build common SIMKL API headers."""
-
         headers = {
             "Content-Type": "application/json",
             "simkl-api-key": self.client_id,
             "User-Agent": USER_AGENT,
         }
-
         if token:
             headers["Authorization"] = f"Bearer {token}"
-
         return headers
 
-    def _params(
-        self,
-        **extra,
-    ) -> dict:
-        """
-        Build common SIMKL API query parameters.
-
-        SIMKL uses these values to identify the application making
-        API requests.
-        """
-
+    def _params(self, **extra) -> dict:
+        """Build common SIMKL API query parameters (identifies the app)."""
         return {
             "client_id": self.client_id,
             "app-name": APP_NAME,
             "app-version": APP_VERSION,
             **extra,
         }
+
+    def _form(self, **extra) -> dict:
+        """Build the common form body for OAuth requests."""
+        return {
+            "client_id": self.client_id,
+            "app-name": APP_NAME,
+            "app-version": APP_VERSION,
+            **extra,
+        }
+
+    async def _post_form(self, path: str, data: dict) -> tuple[int, str]:
+        """POST a form to SIMKL and return (status, body text)."""
+        session = await self._get_session()
+        async with session.post(
+            f"{API_BASE}{path}", data=data, headers=FORM_HEADERS
+        ) as resp:
+            return resp.status, await resp.text()
+
+    async def _get(
+        self,
+        path: str,
+        token: str,
+        params: dict | None = None,
+        timeout: float | None = None,
+    ):
+        """Authenticated GET. Raises SimklAuthError on 401."""
+        session = await self._get_session()
+        kwargs = {}
+        if timeout is not None:
+            kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
+
+        async with session.get(
+            f"{API_BASE}{path}",
+            params=params if params is not None else self._params(),
+            headers=self._headers(token),
+            **kwargs,
+        ) as resp:
+            if resp.status == 401:
+                raise SimklAuthError("Token invalid or revoked")
+            resp.raise_for_status()
+            return await resp.json()
 
     # -----------------------------------------------------------------------
     # AUTH V2 Device / PIN flow
@@ -105,315 +133,123 @@ class SimklClient:
         """
         Start the SIMKL AUTH V2 device flow.
 
-        Returns:
-            dict containing device_code, user_code, verification_uri,
-            expires_in and interval.
+        Returns a dict containing device_code, user_code, verification_uri,
+        expires_in and interval.
         """
-
-        url = f"{API_BASE}/oauth2/device"
-
-        data = {
-            "client_id": self.client_id,
-            "app-name": APP_NAME,
-            "app-version": APP_VERSION,
-            "scope": "media:read media:write",
-        }
-
         session = await self._get_session()
-
         async with session.post(
-            url,
-            data=data,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": USER_AGENT,
-            },
+            f"{API_BASE}/oauth2/device",
+            data=self._form(scope="media:read media:write"),
+            headers=FORM_HEADERS,
         ) as resp:
-
             resp.raise_for_status()
-
             return await resp.json()
 
-    async def poll_pin(
-        self,
-        device_code: str,
-    ) -> dict | None:
+    async def poll_pin(self, device_code: str) -> dict | None:
         """
         Poll for SIMKL device authorization.
 
-        Returns:
-            Token dictionary once approved, otherwise None.
+        Returns the token dict once approved, or None while still pending.
+        Raises SimklSlowDown if SIMKL asks us to poll less often, and
+        SimklAuthError if the code expired or the user denied access.
         """
-
-        url = f"{API_BASE}/oauth2/token"
-
-        data = {
-            "grant_type": (
-                "urn:ietf:params:oauth:grant-type:"
-                "device_code"
+        status, text = await self._post_form(
+            "/oauth2/token",
+            self._form(
+                grant_type="urn:ietf:params:oauth:grant-type:device_code",
+                device_code=device_code,
             ),
-            "client_id": self.client_id,
-            "app-name": APP_NAME,
-            "app-version": APP_VERSION,
-            "device_code": device_code,
-        }
+        )
+        body = _parse_json(text)
 
-        session = await self._get_session()
-
-        async with session.post(
-            url,
-            data=data,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": USER_AGENT,
-            },
-        ) as resp:
-
-            text = await resp.text()
-
-            if resp.status == 200:
-
-                try:
-                    result = await resp.json()
-
-                except Exception:
-                    log.warning(
-                        "200 response but invalid JSON: %s",
-                        text,
-                    )
-                    return None
-
-                if "access_token" in result:
-
-                    return {
-                        "access_token": result[
-                            "access_token"
-                        ],
-                        "refresh_token": result.get(
-                            "refresh_token"
-                        ),
-                        "expires_in": result.get(
-                            "expires_in"
-                        ),
-                    }
-
-                log.warning(
-                    "200 response but no access_token: %s",
-                    text,
-                )
-
-                return None
-
-            try:
-
-                err = await resp.json()
-
-                error = err.get(
-                    "error",
-                    "",
-                )
-
-                if error in (
-                    "authorization_pending",
-                    "slow_down",
-                ):
-                    return None
-
-                log.warning(
-                    "Token poll error %s: %s",
-                    resp.status,
-                    text,
-                )
-
-            except Exception:
-
-                log.warning(
-                    "Token poll non-JSON %s: %s",
-                    resp.status,
-                    text,
-                )
-
+        if status == 200:
+            if isinstance(body, dict) and "access_token" in body:
+                return {
+                    "access_token": body["access_token"],
+                    "refresh_token": body.get("refresh_token"),
+                    "expires_in": body.get("expires_in"),
+                }
+            log.warning("200 response but no usable access_token: %s", text)
             return None
 
-    async def refresh_token(
-        self,
-        refresh_token: str,
-    ) -> dict | None:
+        error = body.get("error", "") if isinstance(body, dict) else ""
+
+        if error == "authorization_pending":
+            return None
+        if error == "slow_down":
+            raise SimklSlowDown()
+        if error in ("expired_token", "access_denied"):
+            raise SimklAuthError(error)
+
+        log.warning("Token poll error %s: %s", status, text)
+        return None
+
+    async def refresh_token(self, refresh_token: str) -> dict | None:
         """
         Exchange a refresh token for a new access token.
 
-        Returns the new access token, refresh token and expiry information.
+        Returns the new access token, refresh token and expiry information,
+        or None if the refresh failed.
         """
+        status, text = await self._post_form(
+            "/oauth2/token",
+            self._form(grant_type="refresh_token", refresh_token=refresh_token),
+        )
 
-        url = f"{API_BASE}/oauth2/token"
+        if status != 200:
+            log.warning("Refresh failed %s: %s", status, text)
+            return None
 
-        data = {
-            "grant_type": "refresh_token",
-            "client_id": self.client_id,
-            "app-name": APP_NAME,
-            "app-version": APP_VERSION,
-            "refresh_token": refresh_token,
+        body = _parse_json(text)
+        if not isinstance(body, dict):
+            log.warning("SIMKL refresh returned invalid JSON: %s", text)
+            return None
+
+        access_token = body.get("access_token")
+        if not access_token:
+            log.warning("SIMKL refresh response had no access_token")
+            return None
+
+        return {
+            "access_token": access_token,
+            "refresh_token": body.get("refresh_token", refresh_token),
+            "expires_in": body.get("expires_in"),
         }
-
-        session = await self._get_session()
-
-        async with session.post(
-            url,
-            data=data,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": USER_AGENT,
-            },
-        ) as resp:
-
-            if resp.status != 200:
-
-                log.warning(
-                    "Refresh failed %s: %s",
-                    resp.status,
-                    await resp.text(),
-                )
-
-                return None
-
-            try:
-
-                result = await resp.json()
-
-            except Exception:
-
-                log.exception(
-                    "SIMKL refresh returned invalid JSON"
-                )
-
-                return None
-
-            access_token = result.get(
-                "access_token"
-            )
-
-            if not access_token:
-
-                log.warning(
-                    "SIMKL refresh response had no access_token"
-                )
-
-                return None
-
-            return {
-                "access_token": access_token,
-                "refresh_token": result.get(
-                    "refresh_token",
-                    refresh_token,
-                ),
-                "expires_in": result.get(
-                    "expires_in"
-                ),
-            }
 
     # -----------------------------------------------------------------------
     # Authenticated API calls
     # -----------------------------------------------------------------------
 
-    async def get_user_settings(
-        self,
-        token: str,
-    ) -> dict:
+    async def get_user_settings(self, token: str) -> dict:
         """Get the authenticated user's SIMKL settings."""
+        return await self._get("/users/settings", token)
 
-        url = f"{API_BASE}/users/settings"
-
-        session = await self._get_session()
-
-        async with session.get(
-            url,
-            params=self._params(),
-            headers=self._headers(token),
-        ) as resp:
-
-            if resp.status == 401:
-                raise SimklAuthError(
-                    "Token invalid or revoked"
-                )
-
-            resp.raise_for_status()
-
-            return await resp.json()
-
-    async def get_activities(
-        self,
-        token: str,
-    ) -> dict:
+    async def get_activities(self, token: str) -> dict:
         """Get the authenticated user's activity timestamps."""
-
-        url = f"{API_BASE}/sync/activities"
-
-        session = await self._get_session()
-
-        async with session.get(
-            url,
-            params=self._params(),
-            headers=self._headers(token),
-        ) as resp:
-
-            if resp.status == 401:
-                raise SimklAuthError(
-                    "Token invalid or revoked"
-                )
-
-            resp.raise_for_status()
-
-            return await resp.json()
+        return await self._get("/sync/activities", token)
 
     async def get_all_items(
         self,
         token: str,
         media_type: str,
         date_from: str | None = None,
+        timeout: float | None = None,
     ) -> list:
         """
-        Get full watched-item data from SIMKL.
+        Get watched-item data for one media type.
 
-        Returns the list for the requested media type.
-
-        date_from is passed as a proper query parameter so it is
-        URL-encoded correctly.
+        With date_from, only items changed since then are returned.
+        Without it, the user's full history is returned (used once per
+        user to record what they had already watched).
         """
-
-        url = (
-            f"{API_BASE}/sync/all-items/"
-            f"{media_type}"
-        )
-
-        params = self._params(
-            extended="full",
-            episode_watched_at="yes",
-        )
-
+        params = self._params(extended="full", episode_watched_at="yes")
         if date_from:
             params["date_from"] = date_from
 
-        session = await self._get_session()
+        data = await self._get(
+            f"/sync/all-items/{media_type}", token, params=params, timeout=timeout
+        )
 
-        async with session.get(
-            url,
-            params=params,
-            headers=self._headers(token),
-        ) as resp:
-
-            if resp.status == 401:
-                raise SimklAuthError(
-                    "Token invalid or revoked"
-                )
-
-            resp.raise_for_status()
-
-            data = await resp.json()
-
-            if isinstance(data, dict):
-                return data.get(
-                    media_type,
-                    [],
-                )
-
-            return data or []
+        if isinstance(data, dict):
+            return data.get(media_type, [])
+        return data or []
