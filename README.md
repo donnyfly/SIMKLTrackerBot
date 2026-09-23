@@ -11,7 +11,7 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🎬 Tracks TV shows, anime, and movies
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
-* ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in .env)
+* ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
 * 📺 Groups consecutive episodes into a single Discord message
 * 🖼️ Displays posters when available
 * 🔗 Makes titles clickable to their SIMKL pages
@@ -92,12 +92,13 @@ You only need the Client ID. The bot uses SIMKL's device/PIN authentication flow
 
 # 3. Configuration
 
-The bot uses three environment variables:
+The bot uses the following environment variables:
 
 ```env
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
+POLL_INTERVAL_MINUTES=60
 ```
 
 ## `DISCORD_BOT_TOKEN`
@@ -121,6 +122,40 @@ GUILD_ID=123456789012345678
 ```
 
 If you leave it empty, the bot will use its normal global command synchronization.
+
+## `POLL_INTERVAL_MINUTES`
+
+Controls how often the bot automatically checks SIMKL for new activity.
+
+The default is:
+
+```env
+POLL_INTERVAL_MINUTES=60
+```
+
+This means the bot checks SIMKL every **60 minutes**.
+
+You can change this value to suit your needs.
+
+For example, to check every 30 minutes:
+
+```env
+POLL_INTERVAL_MINUTES=30
+```
+
+Or every 15 minutes:
+
+```env
+POLL_INTERVAL_MINUTES=15
+```
+
+The value is measured in minutes.
+
+If you remove `POLL_INTERVAL_MINUTES` from your `.env` file, the bot will automatically use the default of **60 minutes**.
+
+After changing the polling interval, restart the bot for the new value to take effect.
+
+The `/simkl-checknow` command can still be used by administrators to manually check for new activity without waiting for the next scheduled poll.
 
 ---
 
@@ -181,6 +216,7 @@ Add:
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
+POLL_INTERVAL_MINUTES=60
 ```
 
 Save the file.
@@ -249,6 +285,7 @@ Add:
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
+POLL_INTERVAL_MINUTES=60
 ```
 
 Run the container:
@@ -394,9 +431,12 @@ Set your values:
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
+POLL_INTERVAL_MINUTES=60
 ```
 
 Save the file.
+
+You can change `POLL_INTERVAL_MINUTES` if you want the bot to check SIMKL more or less frequently.
 
 ## Start the bot
 
@@ -473,6 +513,7 @@ Set your values:
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
+POLL_INTERVAL_MINUTES=60
 ```
 
 ## Start the bot
@@ -656,7 +697,35 @@ Each individual episode is still tracked internally.
 
 # 11. Polling
 
-The bot checks SIMKL for new activity every **5 minutes** by default.
+The bot checks SIMKL for new activity every **60 minutes by default**.
+
+The polling interval can be changed using the `POLL_INTERVAL_MINUTES` environment variable in your `.env` file.
+
+For example:
+
+```env
+POLL_INTERVAL_MINUTES=30
+```
+
+will make the bot check every 30 minutes.
+
+Another example:
+
+```env
+POLL_INTERVAL_MINUTES=120
+```
+
+will make the bot check every 2 hours.
+
+If `POLL_INTERVAL_MINUTES` is not set, the bot defaults to:
+
+```text
+60 minutes
+```
+
+After changing the value in `.env`, restart the bot for the new interval to take effect.
+
+The `/simkl-checknow` command can be used by administrators to manually check for new activity at any time without waiting for the next scheduled poll.
 
 The bot uses SIMKL's synchronization endpoints to avoid repeatedly downloading and processing the entire watch history.
 
