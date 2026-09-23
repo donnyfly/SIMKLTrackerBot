@@ -11,7 +11,7 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🎬 Tracks TV shows, anime, and movies
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
-* ⏱️ Polls SIMKL for new activity every 5 minutes by default
+* ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in .env)
 * 📺 Groups consecutive episodes into a single Discord message
 * 🖼️ Displays posters when available
 * 🔗 Makes titles clickable to their SIMKL pages
