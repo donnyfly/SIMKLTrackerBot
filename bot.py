@@ -210,10 +210,29 @@ def iter_show_episodes(media_type: str, items):
         if simkl_id is None:
             continue
 
+        # SIMKL stores seasonal anime as separate entries. For anime,
+        # `extended=full_anime_seasons` provides the corresponding
+        # TVDB/American-style season number in `mapped_tvdb_seasons`.
+        # Fall back to the normal season number if the mapping is absent.
+        anime_mapped_seasons = item.get("mapped_tvdb_seasons") or []
+
         for season in item.get("seasons") or []:
             season_num = season.get("number")
             if season_num is None:
                 continue
+
+            if media_type == "anime" and anime_mapped_seasons:
+                mapped_season_num = (
+                    anime_mapped_seasons[season_num - 1]
+                    if (
+                        isinstance(season_num, int)
+                        and season_num > 0
+                        and season_num <= len(anime_mapped_seasons)
+                    )
+                    else None
+                )
+                if mapped_season_num is not None:
+                    season_num = mapped_season_num
 
             for ep in season.get("episodes") or []:
                 ep_num = ep.get("number")
