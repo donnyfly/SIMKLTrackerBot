@@ -1,16 +1,18 @@
 # SIMKL Watch Activity Tracker for Discord
 
 A self-hosted Discord bot that monitors your SIMKL watch activity and posts new watches to a Discord channel.
+
 The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh, clickable SIMKL titles, posters, consecutive episode grouping, and persistent local storage.
 
-<img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/058989d8-f5fc-4dc8-a52e-994747e9deeb" />
+<img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/784cfbb9-5959-408d-881d-43c04b22e9df" />
+
 
 ## Features
 
-* 🎬 Tracks **TV shows, anime, and movies**
+* 🎬 Tracks TV shows, anime, and movies
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
-* ⏱️ Polls SIMKL for new activity every **5 minutes by default**
+* ⏱️ Polls SIMKL for new activity every 5 minutes by default
 * 📺 Groups consecutive episodes into a single Discord message
 * 🖼️ Displays posters when available
 * 🔗 Makes titles clickable to their SIMKL pages
@@ -21,7 +23,9 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * ⚙️ Can also be run directly with Python and systemd
 * 🛠️ Includes administrator commands for configuration and manual checks
 
-## Requirements
+---
+
+# Requirements
 
 You will need:
 
@@ -39,7 +43,7 @@ You will need:
 
 ## Create the Discord Application
 
-1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
+1. Open the Discord Developer Portal.
 2. Click **New Application**.
 3. Give your application a name.
 4. Open the **Bot** section.
@@ -97,15 +101,15 @@ SIMKL_CLIENT_ID=your_simkl_client_id_here
 GUILD_ID=
 ```
 
-### `DISCORD_BOT_TOKEN`
+## `DISCORD_BOT_TOKEN`
 
 Your Discord bot token.
 
-### `SIMKL_CLIENT_ID`
+## `SIMKL_CLIENT_ID`
 
 Your SIMKL application's Client ID.
 
-### `GUILD_ID`
+## `GUILD_ID`
 
 Optional.
 
@@ -127,9 +131,7 @@ Docker Compose is the recommended installation method for most users.
 
 ## Install Docker
 
-Install Docker using the official Docker documentation:
-
-https://docs.docker.com/engine/install/
+Install Docker using the official Docker documentation.
 
 Make sure Docker Compose is available:
 
@@ -144,7 +146,7 @@ mkdir -p ~/simkl-discord-bot
 cd ~/simkl-discord-bot
 ```
 
-## Download the Compose file
+## Create the Compose file
 
 Create `docker-compose.yml`:
 
@@ -204,7 +206,7 @@ sudo docker compose logs -f
 
 The bot should eventually log in to Discord successfully.
 
-Press **Ctrl+C** to stop following the logs. This does not stop the container.
+Press `Ctrl+C` to stop following the logs. This does not stop the container.
 
 ## Updating the bot
 
@@ -283,14 +285,151 @@ Then recreate the container using the same `docker run` command.
 
 ---
 
-# 6. Manual Python Installation
+# 6. Windows — Python
 
-If you do not want to use Docker, the bot can be run directly with Python.
+If you are running the bot directly on Windows without Docker, you can use Python and a virtual environment.
+
+## Install Python
+
+Install Python for Windows.
+
+After installation, open **PowerShell** and check:
+
+```powershell
+python --version
+```
+
+You should see a Python version such as:
+
+```text
+Python 3.14.x
+```
+
+If `python` is not recognized, try:
+
+```powershell
+py --version
+```
+
+## Install Git
+
+Git is recommended for downloading and updating the repository.
+
+After installing Git, verify it:
+
+```powershell
+git --version
+```
+
+## Clone the repository
+
+Clone the repository from GitHub and enter the project directory:
+
+```powershell
+git clone <repository-url>
+cd SIMKLTrackerBot
+```
+
+## Create a virtual environment
+
+```powershell
+python -m venv venv
+```
+
+## Activate the virtual environment
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+You should see `(venv)` at the beginning of your PowerShell prompt.
+
+For example:
+
+```text
+(venv) PS C:\Users\YourName\SIMKLTrackerBot>
+```
+
+### PowerShell execution policy
+
+If PowerShell refuses to run `Activate.ps1`, run:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then activate the environment again:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+## Install dependencies
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+## Create your environment file
+
+Copy the example environment file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Open it:
+
+```powershell
+notepad .env
+```
+
+Set your values:
+
+```env
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
+SIMKL_CLIENT_ID=your_simkl_client_id_here
+GUILD_ID=
+```
+
+Save the file.
+
+## Start the bot
+
+```powershell
+python bot.py
+```
+
+The bot should log in to Discord and begin polling SIMKL.
+
+### Keeping the bot running on Windows
+
+If you want the bot to automatically start after a reboot, you can configure **Windows Task Scheduler** to launch:
+
+```text
+venv\Scripts\python.exe
+```
+
+with:
+
+```text
+bot.py
+```
+
+as the argument.
+
+Set the task's **Start in** directory to the root of the `SIMKLTrackerBot` folder.
+
+---
+
+# 7. Manual Python Installation
+
+If you do not want to use Docker, the bot can be run directly with Python on Linux or macOS.
 
 ## Clone the repository
 
 ```bash
-git clone https://github.com/donnyfly/SIMKLTrackerBot.git
+git clone <repository-url>
 cd SIMKLTrackerBot
 ```
 
@@ -309,7 +448,7 @@ source venv/bin/activate
 ## Install dependencies
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Create your environment file
@@ -340,7 +479,7 @@ python bot.py
 
 ---
 
-# 7. Python + systemd
+# 8. Python + systemd
 
 For a Linux server, systemd can keep the bot running automatically and start it after a reboot.
 
@@ -429,7 +568,7 @@ sudo journalctl -u simkltrackerbot -f
 
 ---
 
-# 8. Discord Commands
+# 9. Discord Commands
 
 The bot provides the following slash commands.
 
@@ -449,7 +588,7 @@ The bot uses SIMKL's AUTH V2 device/PIN flow.
 
 Once linked, the bot tracks new activity for that user.
 
-The bot does **not** intentionally dump a user's entire existing SIMKL watch history into Discord when they first link their account.
+The bot does not intentionally dump a user's entire existing SIMKL watch history into Discord when they first link their account.
 
 ## `/simkl-unlink`
 
@@ -475,7 +614,7 @@ Requires the **Manage Server** permission.
 
 ---
 
-# 9. Episode Grouping
+# 10. Episode Grouping
 
 When multiple consecutive episodes are watched, the bot groups them together.
 
@@ -511,9 +650,9 @@ Each individual episode is still tracked internally.
 
 ---
 
-# 10. Polling
+# 11. Polling
 
-The bot checks SIMKL for new activity every **5 minutes by default**.
+The bot checks SIMKL for new activity every **5 minutes** by default.
 
 The bot uses SIMKL's synchronization endpoints to avoid repeatedly downloading and processing the entire watch history.
 
@@ -521,7 +660,7 @@ This allows the bot to remain lightweight while still detecting new activity.
 
 ---
 
-# 11. Persistent Data
+# 12. Persistent Data
 
 The bot stores persistent information in:
 
@@ -564,7 +703,7 @@ Keep backups somewhere secure because the data contains authentication informati
 
 ---
 
-# 12. Security
+# 13. Security
 
 Never share or commit:
 
@@ -579,7 +718,7 @@ If you accidentally expose your Discord bot token, regenerate it through the Dis
 
 ---
 
-# 13. Troubleshooting
+# 14. Troubleshooting
 
 ## Bot does not start
 
@@ -688,7 +827,7 @@ sudo docker compose ps
 
 ---
 
-# 14. Updating from GitHub
+# 15. Updating from GitHub
 
 ## Docker Compose
 
@@ -701,6 +840,25 @@ cd ~/simkl-discord-bot
 sudo docker compose pull
 sudo docker compose up -d
 ```
+
+Your persistent data in `data/store.json` is preserved.
+
+## Docker CLI
+
+Pull the latest image:
+
+```bash
+sudo docker pull ghcr.io/donnyfly/simkltrackerbot:latest
+```
+
+Then stop and remove the existing container:
+
+```bash
+sudo docker stop simkltrackerbot
+sudo docker rm simkltrackerbot
+```
+
+Recreate it using the same `docker run` command from the Docker CLI installation section.
 
 ## Manual Python
 
@@ -719,7 +877,7 @@ source venv/bin/activate
 Update dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Restart the bot.
@@ -730,14 +888,40 @@ If using systemd:
 sudo systemctl restart simkltrackerbot
 ```
 
+## Windows
+
+Pull the latest code:
+
+```powershell
+git pull
+```
+
+Activate the virtual environment:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+Update dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Restart the bot:
+
+```powershell
+python bot.py
+```
+
 ---
 
-# 15. Development
+# 16. Development
 
 Clone the repository:
 
 ```bash
-git clone https://github.com/donnyfly/SIMKLTrackerBot.git
+git clone <repository-url>
 cd SIMKLTrackerBot
 ```
 
@@ -751,7 +935,7 @@ source venv/bin/activate
 Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Create `.env` from `.env.example` and configure your credentials.
@@ -764,7 +948,7 @@ python bot.py
 
 ---
 
-# 16. Docker Image
+# 17. Docker Image
 
 The project publishes a Docker image to GitHub Container Registry:
 
@@ -778,7 +962,7 @@ The image can therefore be updated without building the application locally.
 
 ---
 
-# 17. Repository Structure
+# 18. Repository Structure
 
 ```text
 SIMKLTrackerBot/
