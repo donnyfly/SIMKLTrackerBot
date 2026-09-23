@@ -5,7 +5,7 @@ Features:
 - Uses AUTH V2 Device / PIN flow
 - Automatic token refresh
 - Smart polling via /sync/activities
-- 10-minute polling by default
+- 60-minute polling by default
 - Groups consecutive watched episodes into ranges
 - Minimal original-style Discord embeds
 - Posters + clickable SIMKL titles
@@ -37,14 +37,14 @@ SIMKL_CLIENT_ID = os.getenv("SIMKL_CLIENT_ID")
 GUILD_ID = os.getenv("GUILD_ID")
 
 # How often SIMKL activity is checked.
-# Recommended default: 10 minutes.
+# Recommended default: 60 minutes.
 try:
     POLL_INTERVAL_MINUTES = max(
-        int(os.getenv("POLL_INTERVAL_MINUTES", "10")),
+        int(os.getenv("POLL_INTERVAL_MINUTES", "60")),
         1,
     )
 except ValueError:
-    POLL_INTERVAL_MINUTES = 10
+    POLL_INTERVAL_MINUTES = 60
 
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit(
