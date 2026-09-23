@@ -4,8 +4,11 @@ SIMKL Watch Activity Tracker for Discord (AUTH V2)
 Features:
 - Uses AUTH V2 Device / PIN flow
 - Automatic token refresh
+- Proactive token refresh before expiry
 - Smart polling via /sync/activities
 - 60-minute polling by default
+- Prevents overlapping polling cycles
+- Cooldown for manual /simkl-checknow requests
 - Groups consecutive watched episodes into ranges
 - Minimal original-style Discord embeds
 - Posters + clickable SIMKL titles
@@ -15,7 +18,8 @@ Features:
 import os
 import asyncio
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
 import discord
@@ -50,6 +54,23 @@ if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit(
         "Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID."
     )
+
+
+# ---------------------------------------------------------------------------
+# Polling safety
+# ---------------------------------------------------------------------------
+
+# Prevents two polling cycles from running at the same time.
+#
+# This is important because /simkl-checknow and the automatic background
+# polling loop can otherwise run simultaneously and potentially cause
+# duplicate API requests or duplicate Discord posts.
+poll_lock = asyncio.Lock()
+
+# Prevent /simkl-checknow from being spammed repeatedly.
+CHECKNOW_COOLDOWN_SECONDS = 30
+
+last_checknow_at = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +189,45 @@ def parse_iso(value: str) -> datetime:
         return datetime.min.replace(
             tzinfo=timezone.utc
         )
+
+
+def calculate_token_expiry(
+    expires_in,
+) -> str | None:
+    """
+    Convert SIMKL's expires_in value into an absolute UTC timestamp.
+
+    SIMKL normally returns expires_in as the number of seconds until the
+    access token expires.
+    """
+
+    if expires_in is None:
+        return None
+
+    try:
+
+        seconds = int(
+            expires_in
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    if seconds <= 0:
+        return None
+
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=seconds)
+    )
+
+    return expires_at.strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 def is_admin(
@@ -364,11 +424,58 @@ async def get_valid_token(
             "No SIMKL access token stored."
         )
 
-    # Do NOT make an extra /sync/activities request here.
+    # -----------------------------------------------------------------------
+    # Proactive refresh
     #
-    # The actual activity check in poll_single_user() is also capable of
-    # detecting an expired token. If authentication fails there, the token
-    # will be refreshed and the activity request retried.
+    # Refresh approximately 24 hours before the token expires.
+    #
+    # This avoids waiting for SIMKL to return a 401 during normal polling.
+    # -----------------------------------------------------------------------
+
+    token_expires_at = user_data.get(
+        "token_expires_at"
+    )
+
+    if token_expires_at:
+
+        expiry_dt = parse_iso(
+            token_expires_at
+        )
+
+        refresh_threshold = (
+            datetime.now(timezone.utc)
+            + timedelta(days=1)
+        )
+
+        if expiry_dt <= refresh_threshold:
+
+            log.info(
+                "SIMKL token for user %s is "
+                "expiring within 24 hours. "
+                "Refreshing proactively.",
+                discord_user_id,
+            )
+
+            try:
+
+                return await refresh_user_token(
+                    discord_user_id,
+                    user_data,
+                )
+
+            except SimklAuthError:
+
+                # Keep the existing token as a fallback.
+                #
+                # If it is actually expired, the subsequent API request
+                # will return 401 and the normal refresh/retry logic will
+                # handle it.
+                log.warning(
+                    "Proactive SIMKL token refresh failed "
+                    "for user %s. Continuing with existing token.",
+                    discord_user_id,
+                )
+
     return access_token
 
 
@@ -413,18 +520,33 @@ async def refresh_user_token(
         "refresh_token"
     )
 
+    token_expires_at = calculate_token_expiry(
+        new_tokens.get(
+            "expires_in"
+        )
+    )
+
     await storage.update_tokens(
         discord_user_id,
         new_access_token,
         new_refresh_token,
+        token_expires_at,
     )
 
     # Keep the in-memory user data current for the rest of this polling
     # cycle and future operations using this object.
-    user_data["simkl_token"] = new_access_token
+    user_data["simkl_token"] = (
+        new_access_token
+    )
 
     if new_refresh_token:
-        user_data["refresh_token"] = new_refresh_token
+        user_data["refresh_token"] = (
+            new_refresh_token
+        )
+
+    user_data["token_expires_at"] = (
+        token_expires_at
+    )
 
     log.info(
         "Refreshed SIMKL token for user %s.",
@@ -536,6 +658,14 @@ async def simkl_link(
             "refresh_token"
         )
 
+        token_expires_at = (
+            calculate_token_expiry(
+                tokens.get(
+                    "expires_in"
+                )
+            )
+        )
+
         try:
 
             settings = (
@@ -570,6 +700,7 @@ async def simkl_link(
             refresh_token,
             simkl_username,
             now_iso(),
+            token_expires_at,
         )
 
         try:
@@ -777,6 +908,8 @@ async def simkl_checknow(
     interaction: discord.Interaction,
 ):
 
+    global last_checknow_at
+
     if not is_admin(
         interaction
     ):
@@ -789,12 +922,69 @@ async def simkl_checknow(
 
         return
 
-    await interaction.response.send_message(
-        "Checking SIMKL activity now...",
-        ephemeral=True,
+    # -----------------------------------------------------------------------
+    # Prevent manual checks from being spammed.
+    # -----------------------------------------------------------------------
+
+    current_time = time.monotonic()
+
+    elapsed = (
+        current_time
+        - last_checknow_at
     )
 
-    await poll_all_users()
+    if elapsed < CHECKNOW_COOLDOWN_SECONDS:
+
+        remaining = int(
+            CHECKNOW_COOLDOWN_SECONDS
+            - elapsed
+        ) + 1
+
+        await interaction.response.send_message(
+            f"Please wait about {remaining} "
+            f"second(s) before using "
+            f"`/simkl-checknow` again.",
+            ephemeral=True,
+        )
+
+        return
+
+    # -----------------------------------------------------------------------
+    # Prevent overlap with another polling cycle.
+    # -----------------------------------------------------------------------
+
+    if poll_lock.locked():
+
+        await interaction.response.send_message(
+            "A SIMKL activity check is already "
+            "running. Please wait for it to finish.",
+            ephemeral=True,
+        )
+
+        return
+
+    # Acquire the lock before doing anything that can yield.
+    #
+    # If the scheduled poll acquires it between the check above and this
+    # point, asyncio.Lock.acquire() will wait for it to finish. This is
+    # extremely unlikely because the lock acquisition itself completes
+    # immediately when the lock is free.
+    await poll_lock.acquire()
+
+    last_checknow_at = time.monotonic()
+
+    try:
+
+        await interaction.response.send_message(
+            "Checking SIMKL activity now...",
+            ephemeral=True,
+        )
+
+        await _poll_all_users()
+
+    finally:
+
+        poll_lock.release()
 
     await interaction.followup.send(
         "Done.",
@@ -1354,7 +1544,7 @@ async def poll_single_user(
     # -----------------------------------------------------------------------
     # Check SIMKL activities
     #
-    # This is now the ONLY /sync/activities request made during a normal
+    # This is the ONLY /sync/activities request made during a normal
     # polling cycle.
     # -----------------------------------------------------------------------
 
@@ -1590,7 +1780,12 @@ async def poll_single_user(
 # Poll all users
 # ---------------------------------------------------------------------------
 
-async def poll_all_users():
+async def _poll_all_users():
+    """
+    Run one polling cycle.
+
+    This function assumes poll_lock is already held.
+    """
 
     data = await storage.get_all()
 
@@ -1656,6 +1851,19 @@ async def poll_all_users():
                 "Error polling user %s.",
                 discord_user_id,
             )
+
+
+async def poll_all_users():
+    """
+    Run one polling cycle while holding the global polling lock.
+
+    This ensures that the automatic background poll and manual
+    /simkl-checknow cannot run simultaneously.
+    """
+
+    async with poll_lock:
+
+        await _poll_all_users()
 
 
 # ---------------------------------------------------------------------------

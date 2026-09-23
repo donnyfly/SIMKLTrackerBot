@@ -7,7 +7,10 @@ during polling.
 
 The JSON file is still written whenever persistent data changes.
 
-AUTH V2 stores both access_token and refresh_token.
+AUTH V2 stores:
+- access_token
+- refresh_token
+- token_expires_at
 """
 
 import asyncio
@@ -25,7 +28,7 @@ DATA_PATH = os.path.join(
 
 _DEFAULT = {
     "channel_id": None,
-    "poll_interval_minutes": 5,
+    "poll_interval_minutes": 60,
     "users": {},
 }
 
@@ -50,17 +53,20 @@ def _load_from_disk() -> dict:
         return _default_data()
 
     try:
+
         with open(
             DATA_PATH,
             "r",
             encoding="utf-8",
         ) as f:
+
             data = json.load(f)
 
     except (
         OSError,
         json.JSONDecodeError,
     ):
+
         return _default_data()
 
     if not isinstance(data, dict):
@@ -82,7 +88,11 @@ def _load_from_disk() -> dict:
         {},
     )
 
-    if not isinstance(data["users"], dict):
+    if not isinstance(
+        data["users"],
+        dict,
+    ):
+
         data["users"] = {}
 
     return data
@@ -125,7 +135,9 @@ def _save_to_disk(data: dict) -> None:
     )
 
 
-def _normalise_user(user: dict) -> None:
+def _normalise_user(
+    user: dict,
+) -> None:
     """
     Make sure an existing user's data has all expected fields.
     """
@@ -137,6 +149,11 @@ def _normalise_user(user: dict) -> None:
 
     user.setdefault(
         "refresh_token",
+        None,
+    )
+
+    user.setdefault(
+        "token_expires_at",
         None,
     )
 
@@ -174,13 +191,24 @@ def _normalise_user(user: dict) -> None:
         [],
     )
 
-    if isinstance(announced, set):
+    if isinstance(
+        announced,
+        set,
+    ):
+
         user["announced"] = announced
 
-    elif isinstance(announced, list):
-        user["announced"] = set(announced)
+    elif isinstance(
+        announced,
+        list,
+    ):
+
+        user["announced"] = set(
+            announced
+        )
 
     else:
+
         user["announced"] = set()
 
 
@@ -192,6 +220,7 @@ class Storage:
     """
 
     def __init__(self):
+
         self._data = _load_from_disk()
 
         for user in self._data.get(
@@ -199,28 +228,42 @@ class Storage:
             {},
         ).values():
 
-            if isinstance(user, dict):
-                _normalise_user(user)
+            if isinstance(
+                user,
+                dict,
+            ):
+
+                _normalise_user(
+                    user
+                )
 
     # -----------------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------------
 
-    def _serialisable_data(self) -> dict:
+    def _serialisable_data(
+        self,
+    ) -> dict:
         """
         Create a JSON-safe copy of the in-memory data.
 
         Internal announced sets are converted back into lists.
         """
 
-        data = copy.deepcopy(self._data)
+        data = copy.deepcopy(
+            self._data
+        )
 
         for user in data.get(
             "users",
             {},
         ).values():
 
-            if not isinstance(user, dict):
+            if not isinstance(
+                user,
+                dict,
+            ):
+
                 continue
 
             announced = user.get(
@@ -228,7 +271,11 @@ class Storage:
                 set(),
             )
 
-            if isinstance(announced, set):
+            if isinstance(
+                announced,
+                set,
+            ):
+
                 # Sorting makes the JSON output deterministic.
                 user["announced"] = sorted(
                     announced
@@ -247,7 +294,9 @@ class Storage:
     # General
     # -----------------------------------------------------------------------
 
-    async def get_all(self) -> dict:
+    async def get_all(
+        self,
+    ) -> dict:
         """
         Return a snapshot of all stored data.
 
@@ -256,6 +305,7 @@ class Storage:
         """
 
         async with _lock:
+
             return self._serialisable_data()
 
     async def set_channel(
@@ -264,7 +314,10 @@ class Storage:
     ) -> None:
 
         async with _lock:
-            self._data["channel_id"] = channel_id
+
+            self._data["channel_id"] = (
+                channel_id
+            )
 
             self._save()
 
@@ -274,7 +327,10 @@ class Storage:
     ) -> None:
 
         async with _lock:
-            self._data["poll_interval_minutes"] = max(
+
+            self._data[
+                "poll_interval_minutes"
+            ] = max(
                 int(minutes),
                 1,
             )
@@ -292,6 +348,7 @@ class Storage:
         refresh_token: str | None,
         simkl_username: str,
         start_time_iso: str,
+        token_expires_at: str | None = None,
     ) -> None:
 
         async with _lock:
@@ -299,14 +356,25 @@ class Storage:
             self._data["users"][
                 discord_user_id
             ] = {
+
                 "simkl_token": access_token,
+
                 "refresh_token": refresh_token,
-                "simkl_username": simkl_username,
+
+                "token_expires_at": (
+                    token_expires_at
+                ),
+
+                "simkl_username": (
+                    simkl_username
+                ),
+
                 "last_checked": {
                     "shows": start_time_iso,
                     "movies": start_time_iso,
                     "anime": start_time_iso,
                 },
+
                 "announced": set(),
             }
 
@@ -317,21 +385,36 @@ class Storage:
         discord_user_id: str,
         access_token: str,
         refresh_token: str | None,
+        token_expires_at: str | None = None,
     ) -> None:
 
         async with _lock:
 
-            user = self._data["users"].get(
+            user = self._data[
+                "users"
+            ].get(
                 discord_user_id
             )
 
             if not user:
                 return
 
-            user["simkl_token"] = access_token
+            _normalise_user(
+                user
+            )
+
+            user[
+                "simkl_token"
+            ] = access_token
 
             if refresh_token:
-                user["refresh_token"] = refresh_token
+                user[
+                    "refresh_token"
+                ] = refresh_token
+
+            user[
+                "token_expires_at"
+            ] = token_expires_at
 
             self._save()
 
@@ -342,10 +425,16 @@ class Storage:
 
         async with _lock:
 
-            if discord_user_id not in self._data["users"]:
+            if (
+                discord_user_id
+                not in self._data["users"]
+            ):
+
                 return False
 
-            del self._data["users"][
+            del self._data[
+                "users"
+            ][
                 discord_user_id
             ]
 
@@ -366,7 +455,9 @@ class Storage:
 
         async with _lock:
 
-            user = self._data["users"].get(
+            user = self._data[
+                "users"
+            ].get(
                 discord_user_id
             )
 
@@ -378,7 +469,9 @@ class Storage:
                 {},
             )
 
-            user["last_checked"][
+            user[
+                "last_checked"
+            ][
                 category
             ] = iso_timestamp
 
@@ -405,16 +498,24 @@ class Storage:
 
         async with _lock:
 
-            user = self._data["users"].get(
+            user = self._data[
+                "users"
+            ].get(
                 discord_user_id
             )
 
             if not user:
                 return
 
-            _normalise_user(user)
+            _normalise_user(
+                user
+            )
 
-            user["announced"].update(keys)
+            user[
+                "announced"
+            ].update(
+                keys
+            )
 
             self._save()
 
@@ -431,16 +532,23 @@ class Storage:
 
         async with _lock:
 
-            user = self._data["users"].get(
+            user = self._data[
+                "users"
+            ].get(
                 discord_user_id
             )
 
             if not user:
                 return False
 
-            _normalise_user(user)
+            _normalise_user(
+                user
+            )
 
-            return key in user["announced"]
+            return (
+                key
+                in user["announced"]
+            )
 
 
 storage = Storage()
