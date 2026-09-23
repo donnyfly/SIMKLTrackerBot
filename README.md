@@ -12,12 +12,12 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
 * ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
+* 📊 Uses incremental syncing and `/sync/activities` to minimize unnecessary API requests
 * 📺 Groups consecutive episodes into a single Discord message
 * 🖼️ Displays posters when available
 * 🔗 Makes titles clickable to their SIMKL pages
 * 💾 Stores bot data locally in a lightweight JSON file
 * 🔐 SIMKL account tokens stay on your own server
-* ⚡ Uses incremental SIMKL syncing to avoid repeatedly processing your entire watch history
 * 🐳 Docker support with a pre-built image on GitHub Container Registry
 * ⚙️ Can also be run directly with Python and systemd
 * 🛠️ Includes administrator commands for configuration and manual checks
@@ -155,7 +155,7 @@ If you remove `POLL_INTERVAL_MINUTES` from your `.env` file, the bot will automa
 
 After changing the polling interval, restart the bot for the new value to take effect.
 
-The `/simkl-checknow` command can still be used by administrators to manually check for new activity without waiting for the next scheduled poll.
+The `/simkl-checknow` command can be used by administrators to manually check for new activity without waiting for the next scheduled poll. A short cooldown prevents repeated manual checks from generating unnecessary API requests.
 
 ---
 
@@ -704,14 +704,6 @@ The polling interval can be changed using the `POLL_INTERVAL_MINUTES` environmen
 For example:
 
 ```env
-POLL_INTERVAL_MINUTES=30
-```
-
-will make the bot check every 30 minutes.
-
-Another example:
-
-```env
 POLL_INTERVAL_MINUTES=120
 ```
 
@@ -725,11 +717,23 @@ If `POLL_INTERVAL_MINUTES` is not set, the bot defaults to:
 
 After changing the value in `.env`, restart the bot for the new interval to take effect.
 
-The `/simkl-checknow` command can be used by administrators to manually check for new activity at any time without waiting for the next scheduled poll.
+### API usage
 
-The bot uses SIMKL's synchronization endpoints to avoid repeatedly downloading and processing the entire watch history.
+The bot is designed to minimize unnecessary SIMKL API requests.
 
-This allows the bot to remain lightweight while still detecting new activity.
+During a normal polling cycle, it first checks SIMKL's `/sync/activities` endpoint. If SIMKL reports that a media type has changed since the bot's last check, the bot then requests the relevant updated watch data using an incremental `date_from` value.
+
+The bot does **not** repeatedly download the user's entire watch history during every polling cycle.
+
+Because SIMKL API requests are subject to account/app limits, shorter polling intervals will result in more API requests. A longer interval is recommended if you do not need near-real-time activity updates.
+
+The `/simkl-checknow` command can be used by administrators to manually check for new activity without waiting for the next scheduled poll. Manual checks have a short cooldown to prevent accidental repeated requests.
+
+### Token refresh
+
+SIMKL authentication tokens are refreshed automatically when necessary. The bot also tracks token expiry information and can proactively refresh a token when it is approaching expiration.
+
+This allows linked users to remain authenticated without having to repeatedly link their SIMKL account.
 
 ---
 
@@ -744,7 +748,7 @@ data/store.json
 This includes information such as:
 
 * Linked Discord/SIMKL accounts
-* SIMKL authentication information
+* SIMKL access and refresh tokens
 * Discord channel configuration
 * Polling state
 * Previously announced activity
