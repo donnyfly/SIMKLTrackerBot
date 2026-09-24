@@ -57,6 +57,7 @@ class SimklBot(discord.Client):
         super().__init__(intents=discord.Intents.default()); self.tree=app_commands.CommandTree(self)
     async def setup_hook(self):
         await self.tree.sync()
+        await imdb.start()
         log.info("Slash commands synced globally.")
     async def close(self):
         poll_task = getattr(self, "_poll_task", None)
