@@ -6,6 +6,7 @@ Uses TMDB's API:
 https://developer.themoviedb.org/
 """
 
+import asyncio
 import logging
 
 import aiohttp
@@ -50,6 +51,18 @@ class TmdbClient:
             dict | None,
         ] = {}
 
+        # Cache TV series details used by anime fallback resolution.
+        self._series_cache: dict[
+            int,
+            dict | None,
+        ] = {}
+
+        # Cache the result of the more expensive anime episode resolver.
+        self._anime_episode_cache: dict[
+            tuple,
+            dict | None,
+        ] = {}
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """Return the shared HTTP session, creating it if needed."""
         if self._session is None or self._session.closed:
@@ -89,15 +102,37 @@ class TmdbClient:
             if params:
                 request_params.update(params)
 
-            async with session.get(
-                path,
-                params=request_params,
-            ) as resp:
+            for attempt in range(4):
+                async with session.get(
+                    path,
+                    params=request_params,
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
 
-                if resp.status != 200:
-                    return None
+                    if resp.status != 429 or attempt >= 3:
+                        if resp.status == 429:
+                            log.warning(
+                                "TMDB rate limit reached for %s after %s retries.",
+                                path,
+                                attempt,
+                            )
+                        return None
 
-                return await resp.json()
+                    retry_after = resp.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after)
+                    except (TypeError, ValueError):
+                        delay = 2 ** attempt
+
+                    delay = min(max(delay, 1.0), 30.0)
+
+                    log.warning(
+                        "TMDB rate limit reached for %s; retrying in %.1fs.",
+                        path,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
 
         except (aiohttp.ClientError, TimeoutError):
             log.warning(
@@ -357,6 +392,21 @@ class TmdbClient:
             if value not in candidates:
                 candidates.append(value)
 
+        normalized_title = (
+            str(episode_title).strip().casefold()
+            if episode_title
+            else ""
+        )
+        cache_key = (
+            tuple(candidate_series_ids),
+            tuple(candidates),
+            int(episode_number),
+            normalized_title,
+        )
+
+        if cache_key in self._anime_episode_cache:
+            return self._anime_episode_cache[cache_key]
+
         # --------------------------------------------------------------
         # First try the known season numbers.
         # --------------------------------------------------------------
@@ -394,12 +444,14 @@ class TmdbClient:
                         # different numbering schemes.
                         continue
 
-                return {
+                result = {
                     "series_id": current_series_id,
                     "season_number": season_number,
                     "episode_number": episode_number,
                     "episode": episode,
                 }
+                self._anime_episode_cache[cache_key] = result
+                return result
 
         # --------------------------------------------------------------
         # Broader fallback:
@@ -409,8 +461,8 @@ class TmdbClient:
         # --------------------------------------------------------------
 
         for current_series_id in candidate_series_ids:
-            series_data = await self._get_json(
-                f"{API_BASE}/tv/{current_series_id}",
+            series_data = await self._get_series_details(
+                current_series_id,
             )
 
             if not series_data:
@@ -483,7 +535,28 @@ class TmdbClient:
                         "episode": episode,
                     }
 
+        self._anime_episode_cache[cache_key] = None
         return None
+
+    async def _get_series_details(
+        self,
+        series_id,
+    ) -> dict | None:
+        """Get and cache TMDB TV series details."""
+
+        try:
+            series_id = int(series_id)
+        except (TypeError, ValueError):
+            return None
+
+        if series_id in self._series_cache:
+            return self._series_cache[series_id]
+
+        data = await self._get_json(
+            f"{API_BASE}/tv/{series_id}",
+        )
+        self._series_cache[series_id] = data
+        return data
 
     async def _get_season_details(
         self,
