@@ -92,6 +92,30 @@ def _normalise_user(user: dict) -> None:
     # history recorded yet; the bot does that on their next poll.
     user.setdefault("history_seeded", False)
 
+    user.setdefault("embed_preferences", {
+        "style": "rich",
+        "artwork": "auto",
+        "activity_text": "short",
+    })
+    prefs = user["embed_preferences"]
+    if not isinstance(prefs, dict):
+        prefs = {}
+        user["embed_preferences"] = prefs
+    prefs.setdefault("style", "rich")
+    prefs.setdefault("artwork", "auto")
+    prefs.setdefault("activity_text", "short")
+
+    user.setdefault("activity_state", {
+        "statuses": {},
+        "watch_times": {},
+    })
+    state = user["activity_state"]
+    if not isinstance(state, dict):
+        state = {}
+        user["activity_state"] = state
+    state.setdefault("statuses", {})
+    state.setdefault("watch_times", {})
+
     user.setdefault("last_checked", {})
     for media_type in ("shows", "movies", "anime"):
         user["last_checked"].setdefault(media_type, EPOCH_ISO)
@@ -226,6 +250,59 @@ class Storage:
             if refresh_token:
                 user["refresh_token"] = refresh_token
             user["token_expires_at"] = token_expires_at
+            self._dirty = True
+        await self.flush()
+
+    async def get_embed_preferences(self, discord_user_id: str) -> dict:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return {"style": "rich", "artwork": "auto", "activity_text": "short"}
+            return copy.deepcopy(user["embed_preferences"])
+
+    async def set_embed_preferences(
+        self,
+        discord_user_id: str,
+        style: str | None = None,
+        artwork: str | None = None,
+        activity_text: str | None = None,
+    ) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            prefs = user["embed_preferences"]
+            if style is not None:
+                prefs["style"] = style
+            if artwork is not None:
+                prefs["artwork"] = artwork
+            if activity_text is not None:
+                prefs["activity_text"] = activity_text
+            self._dirty = True
+        await self.flush()
+
+    async def get_activity_state(self, discord_user_id: str) -> dict:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return {"statuses": {}, "watch_times": {}}
+            return copy.deepcopy(user["activity_state"])
+
+    async def update_activity_state(
+        self,
+        discord_user_id: str,
+        statuses: dict | None = None,
+        watch_times: dict | None = None,
+    ) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            state = user["activity_state"]
+            if statuses:
+                state["statuses"].update(statuses)
+            if watch_times:
+                state["watch_times"].update(watch_times)
             self._dirty = True
         await self.flush()
 
