@@ -1223,17 +1223,23 @@ TEXT_CHOICES = [
     app_commands.Choice(name="Detailed", value="detailed"),
 ]
 
-@bot.tree.command(name="simkl-style", description="Choose how your SIMKL activity embeds are displayed.")
-@app_commands.describe(style="Embed layout.", artwork="Choose which artwork type to use.", activity_text="Choose short or detailed activity wording.")
+@bot.tree.command(name="simkl-style", description="Choose your personal SIMKL activity embed preferences.")
+@app_commands.describe(style="Personal embed layout.", artwork="Personal artwork preference.", activity_text="Personal activity wording.")
 @app_commands.choices(style=STYLE_CHOICES, artwork=ARTWORK_CHOICES, activity_text=TEXT_CHOICES)
 async def simkl_style(interaction: discord.Interaction, style: app_commands.Choice[str] | None = None, artwork: app_commands.Choice[str] | None = None, activity_text: app_commands.Choice[str] | None = None):
     user_id = str(interaction.user.id)
-    current = await storage.get_embed_preferences(user_id)
+
     if style is None and artwork is None and activity_text is None:
+        current = await storage.get_embed_preferences(user_id)
         await interaction.response.send_message(
-            f"Embed style: {current['style']}\nArtwork: {current['artwork']}\nActivity text: {current['activity_text']}", ephemeral=True
+            f"Your effective settings:\n"
+            f"• Style: **{current['style']}**\n"
+            f"• Artwork: **{current['artwork']}**\n"
+            f"• Activity text: **{current['activity_text']}**",
+            ephemeral=True,
         )
         return
+
     await storage.set_embed_preferences(
         user_id,
         style=style.value if style else None,
@@ -1242,7 +1248,41 @@ async def simkl_style(interaction: discord.Interaction, style: app_commands.Choi
     )
     updated = await storage.get_embed_preferences(user_id)
     await interaction.response.send_message(
-        f"Updated: {updated['style']} / {updated['artwork']} / {updated['activity_text']}", ephemeral=True
+        f"Your personal settings are now **{updated['style']} / {updated['artwork']} / {updated['activity_text']}**.\n"
+        f"These settings override the server default.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="simkl-style-server", description="(Admin) Set the server-wide default SIMKL activity embed style.")
+@app_commands.describe(style="Server-wide default embed layout.", artwork="Server-wide default artwork preference.", activity_text="Server-wide default activity wording.")
+@app_commands.choices(style=STYLE_CHOICES, artwork=ARTWORK_CHOICES, activity_text=TEXT_CHOICES)
+async def simkl_style_server(interaction: discord.Interaction, style: app_commands.Choice[str] | None = None, artwork: app_commands.Choice[str] | None = None, activity_text: app_commands.Choice[str] | None = None):
+    if not is_admin(interaction):
+        await interaction.response.send_message(NOT_ADMIN_MESSAGE, ephemeral=True)
+        return
+
+    if style is None and artwork is None and activity_text is None:
+        current = await storage.get_server_embed_preferences()
+        await interaction.response.send_message(
+            f"Server default:\n"
+            f"• Style: **{current['style']}**\n"
+            f"• Artwork: **{current['artwork']}**\n"
+            f"• Activity text: **{current['activity_text']}**",
+            ephemeral=True,
+        )
+        return
+
+    await storage.set_server_embed_preferences(
+        style=style.value if style else None,
+        artwork=artwork.value if artwork else None,
+        activity_text=activity_text.value if activity_text else None,
+    )
+    updated = await storage.get_server_embed_preferences()
+    await interaction.response.send_message(
+        f"Server default updated to **{updated['style']} / {updated['artwork']} / {updated['activity_text']}**.\n"
+        f"Users with personal settings will continue using their own preferences.",
+        ephemeral=True,
     )
 
 
