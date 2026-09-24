@@ -394,6 +394,12 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb")) if p.get("show_imdb", True) else None
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
+        logo=None
+        if p["artwork"]=="backdrop" and ids.get("tmdb") is not None:
+            try:
+                logo=await (tmdb.get_movie_logo(ids["tmdb"]) if t=="movies" else tmdb.get_tv_logo(ids["tmdb"]))
+            except Exception:
+                log.warning("TMDB title logo lookup failed for %s.", title, exc_info=True)
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p)
         if not await send_embed(ch,e,status):
             ok=False
