@@ -41,7 +41,7 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | --- | --- | --- |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
-| `/simkl-style` | Everyone | Set your personal embed, artwork, and text preferences |
+| `/simkl-style` | Everyone | Set your personal embed, artwork, and text preferences |\n| `/simkl-notifications` | Everyone | Choose which activity notifications you receive |
 | `/simkl-setchannel` | Manage Server | Choose where watch activity is posted |
 | `/simkl-style-server` | Manage Server | Set the server-wide default embed preferences |
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
@@ -67,6 +67,18 @@ Activity messages can be customized using `/simkl-style`.
 Personal preferences override the server's defaults.
 
 Administrators can use `/simkl-style-server` to configure the server-wide defaults.
+
+### Notification controls
+
+Use `/simkl-notifications` to choose which notifications you receive:
+
+- **Movies** — movie watch activity
+- **TV Shows** — TV episode activity
+- **Anime** — anime episode activity
+- **Rewatches** — previously watched movies or episodes watched again
+- **Status Changes** — Watching, Plan to Watch, Completed, and Dropped changes
+
+All notification types are enabled by default. Disabling a notification only suppresses the Discord message; the bot continues tracking the activity so it is not repeatedly processed later.
 
 ---
 

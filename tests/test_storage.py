@@ -139,3 +139,29 @@ def test_legacy_poll_health_defaults_include_consecutive_failures(tmp_path, monk
     store = storage_module.Storage()
     user = store._guild_user("123", "42")
     assert user["consecutive_failures"] == 0
+
+
+
+def test_notification_preferences_default_and_persist(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+
+    async def scenario():
+        store = storage_module.Storage()
+        store._data["users"]["42"] = {"simkl_token": "token", "simkl_username": "tester"}
+        assert await store.get_notification_preferences("42") == storage_module.DEFAULT_NOTIFICATION_PREFERENCES
+        await store.set_notification_preferences("42", movies=False, anime=False, status_changes=False)
+        expected = {"movies": False, "tv": True, "anime": False, "rewatches": True, "status_changes": False}
+        assert await store.get_notification_preferences("42") == expected
+        reloaded = storage_module.Storage()
+        assert await reloaded.get_notification_preferences("42") == expected
+
+    asyncio.run(scenario())
+
+
+def test_legacy_user_gets_notification_defaults(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    data_path.write_text(json.dumps({"poll_interval_minutes": 60, "users": {"42": {"simkl_username": "tester"}}, "guilds": {}}), encoding="utf-8")
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+    store = storage_module.Storage()
+    assert store._user("42")["notification_preferences"] == storage_module.DEFAULT_NOTIFICATION_PREFERENCES

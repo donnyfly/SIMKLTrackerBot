@@ -24,6 +24,14 @@ DEFAULT_EMBED_PREFERENCES = {
     "activity_text": "short",
 }
 
+DEFAULT_NOTIFICATION_PREFERENCES = {
+    "movies": True,
+    "tv": True,
+    "anime": True,
+    "rewatches": True,
+    "status_changes": True,
+}
+
 
 def _default_guild() -> dict:
     return {
@@ -112,6 +120,7 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("simkl_username", "unknown")
     user.setdefault("simkl_account_id", None)
     user.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
+    user.setdefault("notification_preferences", copy.deepcopy(DEFAULT_NOTIFICATION_PREFERENCES))
 
     prefs = user["embed_preferences"]
     if not isinstance(prefs, dict):
@@ -120,6 +129,14 @@ def _normalise_user(user: dict) -> None:
     prefs.setdefault("style", "rich")
     prefs.setdefault("artwork", "auto")
     prefs.setdefault("activity_text", "short")
+
+    notifications = user["notification_preferences"]
+    if not isinstance(notifications, dict):
+        notifications = copy.deepcopy(DEFAULT_NOTIFICATION_PREFERENCES)
+        user["notification_preferences"] = notifications
+    for key, default in DEFAULT_NOTIFICATION_PREFERENCES.items():
+        notifications[key] = bool(notifications.get(key, default))
+
     user.setdefault(
         "embed_preferences_custom",
         prefs != DEFAULT_EMBED_PREFERENCES,
@@ -267,6 +284,7 @@ class Storage:
                 "simkl_token", "refresh_token", "token_expires_at",
                 "simkl_username", "simkl_account_id",
                 "embed_preferences", "embed_preferences_custom",
+                "notification_preferences",
             ):
                 if key in old_user:
                     self._data["users"].setdefault(uid, {})[key] = copy.deepcopy(old_user[key])
@@ -379,6 +397,23 @@ class Storage:
             if activity_text is not None:
                 prefs["activity_text"] = activity_text
             user["embed_preferences_custom"] = True
+            self._dirty = True
+        await self.flush()
+
+    async def get_notification_preferences(self, discord_user_id: str) -> dict:
+        async with _lock:
+            user = self._user(discord_user_id)
+            return copy.deepcopy(user["notification_preferences"]) if user else copy.deepcopy(DEFAULT_NOTIFICATION_PREFERENCES)
+
+    async def set_notification_preferences(self, discord_user_id: str, movies=None, tv=None, anime=None, rewatches=None, status_changes=None) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            prefs = user["notification_preferences"]
+            for key, value in {"movies": movies, "tv": tv, "anime": anime, "rewatches": rewatches, "status_changes": status_changes}.items():
+                if value is not None:
+                    prefs[key] = bool(value)
             self._dirty = True
         await self.flush()
 
