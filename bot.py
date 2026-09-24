@@ -38,9 +38,27 @@ class SimklBot(discord.Client):
         else:
             await self.tree.sync(); log.info("Slash commands synced globally.")
     async def close(self):
+        poll_task = getattr(self, "_poll_task", None)
+        if poll_task and not poll_task.done():
+            log.info("Stopping polling task before shutdown.")
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("Polling task failed while shutting down.")
+
+        try:
+            await storage.flush()
+        except Exception:
+            log.exception("Failed to flush persistent storage during shutdown.")
+
         for client in (simkl,tmdb,mdblist):
-            try: await client.close()
-            except Exception: pass
+            try:
+                await client.close()
+            except Exception:
+                pass
         await super().close()
 bot=SimklBot()
 
@@ -499,15 +517,14 @@ async def simkl_checknow(i):
 POLL_RETRY_DELAY_SECONDS=60
 POLL_MAX_RETRY_DELAY_SECONDS=600
 
-poll_task_started=False
 @bot.event
 async def on_ready():
-    global poll_task_started
     log.info("Logged in as %s.",bot.user)
     for g in bot.guilds:
         await storage.ensure_guild(g.id)
-    if not poll_task_started:
-        poll_task_started=True; bot.loop.create_task(polling_loop())
+    poll_task = getattr(bot, "_poll_task", None)
+    if poll_task is None or poll_task.done():
+        bot._poll_task = bot.loop.create_task(polling_loop(), name="simkl-polling")
 
 async def polling_loop():
     await bot.wait_until_ready()
