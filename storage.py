@@ -349,7 +349,7 @@ class Storage:
             guild = self._guild(guild_id, create=True)
             return copy.deepcopy(guild["embed_preferences"])
 
-    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None) -> None:
+    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             guild = self._guild(guild_id, create=True)
