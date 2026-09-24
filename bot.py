@@ -1231,7 +1231,7 @@ async def simkl_style(interaction: discord.Interaction, style: app_commands.Choi
     current = await storage.get_embed_preferences(user_id)
     if style is None and artwork is None and activity_text is None:
         await interaction.response.send_message(
-            f"Embed style: {current['style']}\\nArtwork: {current['artwork']}\\nActivity text: {current['activity_text']}", ephemeral=True
+            f"Embed style: {current['style']}\nArtwork: {current['artwork']}\nActivity text: {current['activity_text']}", ephemeral=True
         )
         return
     await storage.set_embed_preferences(
@@ -1455,7 +1455,7 @@ async def process_show_items(channel, discord_user_id: str, display_name: str, m
             verb = "rewatched" if activity_type == "rewatched" else "watched"
             description = f"{verb} **{episode_label}**"
             if preferences.get("activity_text") == "detailed": description = f"{verb} **{episode_label}** of **{title}**"
-            if len(episode_group) == 1 and episode_title: description += f"\\n*{episode_title}*"
+            if len(episode_group) == 1 and episode_title: description += f"\n*{episode_title}*"
             embed = build_activity_embed(media_type, description, max(ep["watched_dt"] for ep in episode_group), display_name, member, image_url, profile_url, title=title, title_url=title_url, poster_url=fallback, preferences=preferences)
             if not await send_embed(channel, embed, "episode"):
                 all_sent = False; continue
