@@ -71,3 +71,41 @@ def test_existing_guild_user_gets_new_health_defaults(tmp_path, monkeypatch):
     assert user["last_poll_at"] is None
     assert user["last_success_at"] is None
     assert user["last_error"] is None
+
+
+def test_failed_flush_keeps_previous_file(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    data_path.write_text(
+        json.dumps(
+            {
+                "poll_interval_minutes": 60,
+                "users": {},
+                "guilds": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+
+    store = storage_module.Storage()
+    store._data["users"]["42"] = {"simkl_username": "before"}
+    store._dirty = True
+
+    def fail_write(_text):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(storage_module, "_write_to_disk", fail_write)
+
+    async def scenario():
+        try:
+            await store.flush()
+        except OSError:
+            pass
+        else:
+            raise AssertionError("flush should propagate the write failure")
+
+    asyncio.run(scenario())
+
+    saved = json.loads(data_path.read_text(encoding="utf-8"))
+    assert saved["users"] == {}
+    assert store._dirty is True
