@@ -98,6 +98,9 @@ def _default_guild_user(start_time_iso: str | None = None) -> dict:
         },
         "announced": set(),
         "activity_state": _default_activity_state(),
+        "last_poll_at": None,
+        "last_success_at": None,
+        "last_error": None,
     }
 
 
