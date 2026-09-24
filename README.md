@@ -153,7 +153,10 @@ The value is measured in minutes.
 
 If you remove `POLL_INTERVAL_MINUTES` from your `.env` file, the bot will automatically use the default of **60 minutes**.
 
+5–15 minutes is fine for **PRO/VIP users**; Free users should prefer **30–60 minutes** to stay under the daily quota.
+
 After changing the polling interval, restart the bot for the new value to take effect.
+
 
 The `/simkl-checknow` command can be used by administrators to manually check for new activity without waiting for the next scheduled poll. A short cooldown prevents repeated manual checks from generating unnecessary API requests.
 
@@ -1064,6 +1067,7 @@ SIMKLTrackerBot/
 
 ---
 
-# License
+# License [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-No license has currently been specified for this project.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
