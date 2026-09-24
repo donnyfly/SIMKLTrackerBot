@@ -31,6 +31,8 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🔐 SIMKL account tokens stay on your own server
 * 🐳 Docker support with a pre-built image on GitHub Container Registry
 * ⚙️ Can also be run directly with Python and systemd
+* ⭐ Displays IMDb ratings for movies and TV/anime titles when available
+* 🌸 Displays MyAnimeList (MAL) ratings for anime when available
 * 🛠️ Includes administrator commands for configuration and manual checks
 
 ---
@@ -129,7 +131,7 @@ Your TMDB API key. TMDB is used for episode stills, episode titles, TV/movie bac
 
 ## `MDBLIST_API_KEY`
 
-Optional MDBList API key. When configured, the bot displays the IMDb rating for movies and TV/anime titles. MDBList provides a free API tier with 1,000 requests per day. The bot caches ratings in memory for 6 hours to avoid unnecessary requests.
+Optional MDBList API key. When configured, the bot can display ratings from MDBList for movies and TV/anime titles. IMDb ratings are shown for movies and TV/anime, while anime can also show its MyAnimeList (MAL) rating when MDBList provides one. MDBList provides a free API tier with 1,000 requests per day. The bot caches ratings in memory for 6 hours to avoid unnecessary requests.
 
 Get an API key from your MDBList account preferences.
 
@@ -242,6 +244,8 @@ Add:
 ```env
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
+TMDB_API_KEY=your_tmdb_api_key_here
+MDBLIST_API_KEY=your_mdblist_api_key_here
 GUILD_ID=
 POLL_INTERVAL_MINUTES=60
 ```
@@ -716,7 +720,9 @@ The bot can report these activity types:
 * **watched**
 * **rewatched**
 
-When `MDBLIST_API_KEY` is configured, movies and TV/anime titles also show their IMDb rating when MDBList has one available.
+When `MDBLIST_API_KEY` is configured, movies and TV/anime titles show their IMDb rating when MDBList has one available. Single anime episodes can also show a MyAnimeList (MAL) rating when MDBList provides one.
+
+Ratings are displayed below the episode title for single-episode activity. Episode ranges do not display ratings because they represent multiple episodes.
 
 For a single episode, the bot uses the episode's TMDB still when available. Movies and planned TV/anime activity use landscape TMDB artwork. If TMDB artwork cannot be found, the bot falls back to the SIMKL poster where available.
 
@@ -1135,6 +1141,7 @@ SIMKLTrackerBot/
 ├── README.md
 ├── bot.py
 ├── docker-compose.yml
+├── mdblist_client.py
 ├── requirements.txt
 ├── simkl_client.py
 └── storage.py
