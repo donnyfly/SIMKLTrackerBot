@@ -19,18 +19,19 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 ## Features
 
 - 🎬 Tracks **TV shows, anime, and movies** from SIMKL
+
+- ⭐ IMDb ratings for movies and individual TV/anime episodes when available
+- 🌸 MyAnimeList ratings for anime movies when available
+- 🎨 Multiple embed styles
+- ✍️ Short or detailed activity text
+- 📺 Groups consecutive episodes into a single Discord message
+- 🖼️ TMDB artwork with SIMKL poster fallback
+- ⚙️ Per-user and server-wide rating visibility controls
+- 🔗 Clickable SIMKL titles
 - 🔗 Users link their own SIMKL accounts through Discord
 - 🔄 Automatically refreshes SIMKL authentication tokens
 - 📊 Uses incremental activity syncing to reduce unnecessary API requests
 - ⏱️ Configurable automatic polling
-- 📺 Groups consecutive episodes into a single Discord message
-- 🖼️ TMDB artwork with SIMKL poster fallback
-- ⭐ IMDb ratings for movies and individual TV/anime episodes when available
-- 🌸 MyAnimeList ratings for anime movies when available
-- ⚙️ Per-user and server-wide rating visibility controls
-- 🎨 Multiple embed styles
-- ✍️ Short or detailed activity text
-- 🔗 Clickable SIMKL titles
 - 🏠 Supports multiple Discord servers
 - 💾 Stores data locally in `data/store.json`
 - 🐳 Docker support with a pre-built image
