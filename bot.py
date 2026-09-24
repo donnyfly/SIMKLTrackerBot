@@ -182,10 +182,15 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
     for (sid,sn,kind),es in groups.items():
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
         for grp in group_consecutive(es):
-            image,ep_title=await episode_media(t,grp[0]); label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
+            try:
+                image,ep_title=await episode_media(t,grp[0])
+            except Exception:
+                log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
+                image,ep_title=None,grp[0].get("episode_title")
+            label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
             desc=f"{verb} **{label}**"
             if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
-            if len(grp)==1 and ep_title: desc+=f"\\n*{ep_title}*"
+            if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
             await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
@@ -201,7 +206,9 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         if k in announced and not rw: continue
         if k not in announced and dt<=since: continue
         title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
-        if ids.get("tmdb") is not None: image=await tmdb.get_movie_backdrop(ids["tmdb"])
+        if ids.get("tmdb") is not None:
+            try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
+            except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
         verb="rewatched" if rw else "watched a movie"; desc=verb if p["activity_text"]!="detailed" else f"{verb} **{title}**"
         e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,"movie"): ok=False; continue
@@ -218,7 +225,10 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         if baseline or statuses.get(key)==status: continue
         title=m.get("title") or "Untitled"; poster=simkl_poster_url(m.get("poster")); image=None
         if ids.get("tmdb") is not None:
-            image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
+            try:
+                image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
+            except Exception:
+                log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
         desc=STATUS_TEXT[status] if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**"
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,status): ok=False; continue
@@ -227,37 +237,70 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
     return count,ok
 
 async def poll_one(ch,g,uid,u,gu):
-    token=await valid_token(uid,u); member,name=await resolve_member(g,uid)
-    if not member: return
-    activities,token=await call_refresh(uid,u,token,simkl.get_activities)
+    token=await valid_token(uid,u)
+    member,name=await resolve_member(g,uid)
+    if not member:
+        log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
+        return 0
+    try:
+        activities,token=await call_refresh(uid,u,token,simkl.get_activities)
+    except Exception:
+        log.exception("Failed to get SIMKL activity timestamps for user %s.",uid)
+        return 0
     if not gu.get("history_seeded"):
-        await seed_history(g,uid,u,token); gu["history_seeded"]=True
+        try:
+            token=await seed_history(g,uid,u,token)
+            gu["history_seeded"]=True
+        except Exception:
+            log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
+            return 0
     if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
         profile_lookup_attempted.add(uid)
         try:
-            settings,token=await call_refresh(uid,u,token,simkl.get_user_settings); aid=account_id_from_settings(settings)
-            if aid: await storage.set_account_id(uid,aid); u["simkl_account_id"]=aid
-        except Exception: log.warning("Profile lookup failed for %s.",uid,exc_info=True)
-    profile=simkl_profile_url(u.get("simkl_account_id")); last=await storage.get_last_checked(g,uid)
+            settings,token=await call_refresh(uid,u,token,simkl.get_user_settings)
+            aid=account_id_from_settings(settings)
+            if aid:
+                await storage.set_account_id(uid,aid)
+                u["simkl_account_id"]=aid
+        except Exception:
+            log.warning("Profile lookup failed for %s.",uid,exc_info=True)
+    profile=simkl_profile_url(u.get("simkl_account_id"))
+    last=await storage.get_last_checked(g,uid)
+    posted=0
     for t in MEDIA_TYPES:
-        since=last.get(t,EPOCH_ISO); sdt=parse_iso(since); a=activities.get(ACTIVITY_KEYS[t]) or {}; stamp=a.get("all")
-        if not stamp or parse_iso(stamp)<=sdt: continue
-        items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=since)
-        sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
-        wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
-        if so and wo: await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
+        since=last.get(t,EPOCH_ISO)
+        sdt=parse_iso(since)
+        a=activities.get(ACTIVITY_KEYS[t]) or {}
+        stamp=a.get("all")
+        log.info("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
+        if not stamp or parse_iso(stamp)<=sdt:
+            continue
+        try:
+            items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=since)
+            sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
+            wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
+            if so and wo:
+                await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
+                posted+=wc
+            else:
+                log.warning("Some %s posts failed for user %s; checkpoint not advanced.",t,uid)
+        except Exception:
+            log.exception("Failed processing %s activity for user %s.",t,uid)
         await storage.flush()
+    return posted
 
 async def poll_all(g=None):
     targets=await storage.get_poll_targets(g)
+    posted=0
     for x in targets:
         ch=bot.get_channel(int(x["channel_id"]))
         if ch is None:
             try: ch=await bot.fetch_channel(int(x["channel_id"]))
             except Exception: continue
-        try: await poll_one(ch,int(x["guild_id"]),x["discord_user_id"],x["user_data"],x["guild_user_data"])
+        try: posted+=await poll_one(ch,int(x["guild_id"]),x["discord_user_id"],x["user_data"],x["guild_user_data"])
         except SimklAuthError: log.warning("Auth failed for %s.",x["discord_user_id"])
         except Exception: log.exception("Polling failed for %s.",x["discord_user_id"])
+    return posted
 
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster")]
@@ -273,7 +316,7 @@ async def simkl_link(i):
     linking_users.add(key)
     try:
         await i.response.defer(ephemeral=True); pin=await simkl.start_pin_auth(); code=pin["user_code"]; device=pin["device_code"]; expires=pin.get("expires_in",900); interval=pin.get("interval",5); url=pin.get("verification_uri","https://simkl.com/pin")
-        await i.followup.send(f"Go to {url}\\nEnter this code: {code}\\nThe code expires in about {expires//60} minutes.",ephemeral=True)
+        await i.followup.send(f"Go to {url}\nEnter this code: {code}\nThe code expires in about {expires//60} minutes.",ephemeral=True)
         elapsed=0; tokens=None
         while elapsed<expires:
             await asyncio.sleep(interval); elapsed+=interval
@@ -306,9 +349,9 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     uid=str(i.user.id)
     if style is None and artwork is None and activity_text is None:
-        p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\\n• Style: **{p['style']}**\\n• Artwork: **{p['artwork']}**\\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+        p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
     await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
-    p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\\nThese settings override the server default.",ephemeral=True)
+    p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.",ephemeral=True)
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
@@ -316,9 +359,9 @@ async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,art
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
     if style is None and artwork is None and activity_text is None:
-        p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default:\\n• Style: **{p['style']}**\\n• Artwork: **{p['artwork']}**\\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+        p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
     await storage.set_server_embed_preferences(g,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
-    p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\\nUsers with personal settings will continue using their own preferences.",ephemeral=True)
+    p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nUsers with personal settings will continue using their own preferences.",ephemeral=True)
 
 @bot.tree.command(name="simkl-setchannel",description="(Admin) Set the channel where this server's watch activity is posted.")
 async def simkl_setchannel(i,channel:discord.TextChannel=None):
@@ -331,8 +374,8 @@ async def simkl_status(i):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
     d=await storage.get_all(); sg=(d.get("guilds") or {}).get(str(g),{}); users=sg.get("users") or {}; allu=d.get("users") or {}; ch=sg.get("channel_id"); text=f"<#{ch}>" if ch else "**not set**"
-    linked="\\n".join(f"• <@{uid}> — SIMKL: **{(allu.get(uid) or {}).get('simkl_username','unknown')}**" for uid in users) if users else "No linked accounts."
-    await i.response.send_message(f"**Posting channel:** {text}\\n**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\\n\\n**Linked accounts in this server:**\\n{linked}",ephemeral=True)
+    linked="\n".join(f"• <@{uid}> — SIMKL: **{(allu.get(uid) or {}).get('simkl_username','unknown')}**" for uid in users) if users else "No linked accounts."
+    await i.response.send_message(f"**Posting channel:** {text}\n**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n\n**Linked accounts in this server:**\n{linked}",ephemeral=True)
 
 @bot.tree.command(name="simkl-checknow",description="(Admin) Immediately check this server's SIMKL activity.")
 async def simkl_checknow(i):
@@ -343,9 +386,12 @@ async def simkl_checknow(i):
         await i.response.send_message("Please wait before using /simkl-checknow again.",ephemeral=True); return
     if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
     await poll_lock.acquire(); last_checknow_at=time.monotonic()
-    try: await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True); await poll_all(g)
-    finally: poll_lock.release()
-    await i.followup.send("Done.",ephemeral=True)
+    try:
+        await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
+        posted=await poll_all(g)
+    finally:
+        poll_lock.release()
+    await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
 poll_task_started=False
 @bot.event
