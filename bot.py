@@ -13,6 +13,8 @@ load_dotenv()
 DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN"); SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID"); TMDB_API_KEY=os.getenv("TMDB_API_KEY"); MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY"); GUILD_ID=os.getenv("GUILD_ID")
 try: POLL_INTERVAL_MINUTES=max(int(os.getenv("POLL_INTERVAL_MINUTES","60")),1)
 except ValueError: POLL_INTERVAL_MINUTES=60
+try: POLL_CONCURRENCY=max(int(os.getenv("POLL_CONCURRENCY","5")),1)
+except ValueError: POLL_CONCURRENCY=5
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID: raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
 if not TMDB_API_KEY: raise SystemExit("Missing TMDB_API_KEY.")
 
@@ -380,38 +382,59 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
 
 async def poll_all(g=None):
     async with poll_lock:
+        started=time.monotonic()
         targets=await storage.get_poll_targets(g)
-        posted=0
-        request_cache={}
-        shared_users={}
+        if not targets:
+            log.info("Polling cycle: no linked users with configured channels.")
+            return 0
 
-        # A Discord user has one SIMKL account, even when linked to multiple
-        # servers. Reuse the same in-memory user record and SIMKL responses
-        # during this polling cycle so identical API work is only performed
-        # once per account.
+        # Keep all guilds for the same Discord user in one worker. This
+        # preserves per-user SIMKL request deduplication while allowing
+        # different users to be processed concurrently.
+        users={}
         for x in targets:
-            uid=x["discord_user_id"]
-            shared_user=shared_users.setdefault(uid,x["user_data"])
-            x["user_data"]=shared_user
+            users.setdefault(x["discord_user_id"],[]).append(x)
 
-            gid=x["guild_id"]
-            ch=bot.get_channel(int(x["channel_id"]))
-            if ch is None:
-                try:
-                    ch=await bot.fetch_channel(int(x["channel_id"]))
-                except Exception as exc:
-                    await storage.update_poll_health(gid,uid,last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}")
-                    log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
-                    continue
-            try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"],request_cache)
-            except SimklAuthError:
-                await storage.update_poll_health(x["guild_id"],x["discord_user_id"],last_error="SIMKL authentication failed")
-                log.warning("Auth failed for %s.",x["discord_user_id"])
-            except Exception as exc:
-                await storage.update_poll_health(x["guild_id"],x["discord_user_id"],last_error=f"{type(exc).__name__}: {exc}")
-                log.exception("Polling failed for %s.",x["discord_user_id"])
+        semaphore=asyncio.Semaphore(POLL_CONCURRENCY)
+
+        async def process_user(uid,user_targets):
+            async with semaphore:
+                user_data=user_targets[0]["user_data"]
+                request_cache={}
+                posted=0
+
+                for x in user_targets:
+                    gid=x["guild_id"]
+                    ch=bot.get_channel(int(x["channel_id"]))
+                    if ch is None:
+                        try:
+                            ch=await bot.fetch_channel(int(x["channel_id"]))
+                        except Exception as exc:
+                            await storage.update_poll_health(gid,uid,last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}")
+                            log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
+                            continue
+
+                    try:
+                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache)
+                    except SimklAuthError:
+                        await storage.update_poll_health(gid,uid,last_error="SIMKL authentication failed")
+                        log.warning("Auth failed for %s.",uid)
+                    except Exception as exc:
+                        await storage.update_poll_health(gid,uid,last_error=f"{type(exc).__name__}: {exc}")
+                        log.exception("Polling failed for %s in guild %s.",uid,gid)
+
+                return posted
+
+        results=await asyncio.gather(
+            *(process_user(uid,user_targets) for uid,user_targets in users.items())
+        )
+        posted=sum(results)
+        duration=time.monotonic()-started
+        log.info(
+            "Polling cycle complete: %d user(s), %d target(s), %d posted, %.2fs elapsed, concurrency=%d.",
+            len(users),len(targets),posted,duration,POLL_CONCURRENCY
+        )
         return posted
-
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster")]
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
@@ -559,14 +582,22 @@ async def on_ready():
 async def polling_loop():
     await bot.wait_until_ready()
     retry_delay=POLL_RETRY_DELAY_SECONDS
+    interval_seconds=POLL_INTERVAL_MINUTES*60
+    next_run=time.monotonic()
     while not bot.is_closed():
         try:
             await poll_all()
             retry_delay=POLL_RETRY_DELAY_SECONDS
-            await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
+            next_run+=interval_seconds
+            sleep_for=max(0,next_run-time.monotonic())
+            if sleep_for:
+                await asyncio.sleep(sleep_for)
+            else:
+                log.warning("Polling cycle exceeded the configured interval; starting the next cycle immediately.")
+                next_run=time.monotonic()
         except Exception:
             log.exception("Polling cycle failed; retrying sooner instead of waiting for the full interval.")
             await asyncio.sleep(retry_delay)
             retry_delay=min(retry_delay*2,POLL_MAX_RETRY_DELAY_SECONDS)
-
+            next_run=time.monotonic()
 if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN)
