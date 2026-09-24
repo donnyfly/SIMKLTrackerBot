@@ -48,7 +48,8 @@ You will need:
 * A SIMKL account
 * A Discord Bot Token
 * A SIMKL Client ID
-* A TMDB API key
+* A TMDB API key (for selectable poster/backdrop styles)
+* A MDBList API key (for ratings on embeds)
 
 ---
 
