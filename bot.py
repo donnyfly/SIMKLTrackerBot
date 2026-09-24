@@ -1494,7 +1494,7 @@ async def process_movie_items(channel, discord_user_id: str, display_name: str, 
 
 
 async def process_status_items(channel, discord_user_id: str, display_name: str, member, media_type: str, items, profile_url: str | None = None, baseline: bool = False):
-    state = await storage.get_activity_state(discord_user_id); statuses = state.get("statuses", {}); preferences = await get_embed_preferences(discord_user_id); pending = {}; sent_count = 0; all_sent = True
+    state = await storage.get_activity_state(discord_user_id); statuses = state.get("statuses", {}); baseline = baseline or not state.get("statuses_seeded", False); preferences = await get_embed_preferences(discord_user_id); pending = {}; sent_count = 0; all_sent = True
     for item in items or []:
         media = (item.get("movie") if media_type == "movies" else item.get("show")) or {}; ids = media.get("ids") or {}; simkl_id = ids.get("simkl"); status = item.get("status")
         if simkl_id is None or status not in WATCHLIST_STATUSES: continue
@@ -1510,7 +1510,7 @@ async def process_status_items(channel, discord_user_id: str, display_name: str,
         embed = build_activity_embed(media_type, description, datetime.now(timezone.utc), display_name, member, image_url, profile_url, title=title, title_url=title_url, poster_url=poster_url, preferences=preferences)
         if not await send_embed(channel, embed, status): all_sent = False; continue
         sent_count += 1
-    if pending and all_sent: await storage.update_activity_state(discord_user_id, statuses=pending)
+    if pending and all_sent: await storage.update_activity_state(discord_user_id, statuses=pending, statuses_seeded=True)
     return sent_count, all_sent
 
 
