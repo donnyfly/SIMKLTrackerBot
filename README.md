@@ -25,8 +25,9 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 - ⏱️ Configurable automatic polling
 - 📺 Groups consecutive episodes into a single Discord message
 - 🖼️ TMDB artwork with SIMKL poster fallback
-- ⭐ IMDb ratings for movies and TV/anime when available
-- 🌸 MyAnimeList ratings for anime when available
+- ⭐ IMDb ratings for movies and individual TV/anime episodes when available
+- 🌸 MyAnimeList ratings for anime movies when available
+- ⚙️ Per-user and server-wide rating visibility controls
 - 🎨 Multiple embed styles
 - ✍️ Short or detailed activity text
 - 🔗 Clickable SIMKL titles
@@ -44,8 +45,18 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-style` | Everyone | Set your personal embed, artwork, and text preferences |
 | `/simkl-setchannel` | Manage Server | Choose where watch activity is posted |
 | `/simkl-style-server` | Manage Server | Set the server-wide default embed preferences |
+| `/simkl-ratings` | Everyone | Set your personal IMDb/MyAnimeList rating visibility |
+| `/simkl-ratings-server` | Manage Server | Set the server-wide rating visibility defaults |
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
+
+### Rating customization
+
+Ratings can be controlled with `/simkl-ratings`.
+
+Users can choose whether IMDb and MyAnimeList ratings are shown on their own activity messages. Administrators can use `/simkl-ratings-server` to set the server-wide defaults.
+
+Personal rating preferences override the server defaults.
 
 ### Embed customization
 
@@ -126,9 +137,10 @@ Users will link their own SIMKL accounts later using `/simkl-link`.
 SIMKLTrackerBot uses:
 
 - **TMDB** for artwork and episode information
-- **MDBList** for IMDb and MyAnimeList ratings
+- **MDBList** for movie/show IMDb and MyAnimeList ratings
+- **IMDb's public ratings dataset** for individual episode IMDb ratings
 
-The MDBList API key is optional. Without it, ratings simply won't be displayed.
+The MDBList API key is optional. It is used for movie/show IMDb ratings and anime movie MyAnimeList ratings. Individual episode IMDb ratings use IMDb's public ratings dataset and do not require an MDBList API key.
 
 ### 4. Install Docker
 
@@ -562,12 +574,15 @@ Users can use the same SIMKL account across servers without creating a separate 
 
 ## Ratings
 
-When MDBList is configured:
+Ratings are provided by two sources:
 
-- Movies and TV/anime titles can display IMDb ratings
-- Anime can also display MyAnimeList ratings when available
+- **Movies** — IMDb ratings from MDBList
+- **Individual TV/anime episodes** — IMDb ratings from IMDb's public ratings dataset
+- **Anime movies** — IMDb and MyAnimeList ratings from MDBList
 
-Ratings depend on MDBList having the relevant information available.
+Individual/ranged episode activity is handled differently: a single episode can display its IMDb rating when available, while grouped/ranged episodes do not display an episode rating.
+
+Ratings depend on the relevant source having the information available. The IMDb episode dataset is refreshed automatically and stored locally in `data/imdb_ratings.db`.
 
 ## Artwork
 
@@ -595,7 +610,10 @@ Your persistent data remains in:
 
 ```text
 data/store.json
+data/imdb_ratings.db
 ```
+
+`data/imdb_ratings.db` is automatically rebuilt from IMDb's public ratings dataset when it is missing or older than 24 hours. The downloaded dataset is temporary and is removed after the database is built.
 
 ## Docker CLI
 
@@ -635,15 +653,16 @@ The bot's persistent data is stored in:
 
 ```text
 data/store.json
+data/imdb_ratings.db
 ```
+
+Back up `data/store.json` because it contains authentication information. The IMDb database can be regenerated automatically, so it does not need to be backed up.
 
 For a simple backup:
 
 ```bash
 cp data/store.json data/store.json.backup
 ```
-
-Keep backups secure because the file contains authentication information.
 
 ---
 
