@@ -448,9 +448,11 @@ async def simkl_status(i):
                 token_state=f"expires in {remaining.days}d"
         else:
             token_state="expiry unknown"
+        last_poll=gu.get("last_poll_at")
         last_success=gu.get("last_success_at")
         last_error=gu.get("last_error")
-        health=f"last success {last_success}" if last_success else "no successful poll yet"
+        health=f"last poll {last_poll}" if last_poll else "no poll recorded yet"
+        health += f" · last success {last_success}" if last_success else " · no successful poll yet"
         if last_error:
             health += f" · error: {last_error}"
         lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**\n  {health}")
