@@ -2,7 +2,7 @@
 
 A self-hosted Discord bot that monitors your SIMKL watch activity and posts new watches to a Discord channel.
 
-The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh, clickable SIMKL titles, posters, consecutive episode grouping, and persistent local storage.
+The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh, clickable SIMKL titles, configurable embeds, consecutive episode grouping, TMDB artwork, multi-server support, and persistent local storage.
 
 <img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/1bfa8fcf-a2cc-42e4-b6ea-8bcfe4590fb8" />
 
@@ -14,8 +14,11 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
 * 📊 Uses incremental syncing and `/sync/activities` to minimize unnecessary API requests
 * 📺 Groups consecutive episodes into a single Discord message
-* 🖼️ Displays posters when available
+* 🖼️ Uses TMDB landscape artwork for episodes, movies, and planned activity, with SIMKL poster fallback
+* 🎨 Configurable embed styles: Rich, Minimal, or Poster
+* ✍️ Configurable Short or Detailed activity text
 * 🔗 Makes titles clickable to their SIMKL pages
+* 🏠 Supports multiple Discord servers with per-server channels and defaults
 * 💾 Stores bot data locally in a lightweight JSON file
 * 🔐 SIMKL account tokens stay on your own server
 * 🐳 Docker support with a pre-built image on GitHub Container Registry
@@ -35,6 +38,7 @@ You will need:
 * A SIMKL account
 * A Discord Bot Token
 * A SIMKL Client ID
+* A TMDB API key
 
 ---
 
@@ -97,6 +101,7 @@ The bot uses the following environment variables:
 ```env
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
+TMDB_API_KEY=your_tmdb_api_key_here
 GUILD_ID=
 POLL_INTERVAL_MINUTES=60
 ```
@@ -108,6 +113,10 @@ Your Discord bot token.
 ## `SIMKL_CLIENT_ID`
 
 Your SIMKL application's Client ID.
+
+## `TMDB_API_KEY`
+
+Your TMDB API key. TMDB is used for episode stills, episode titles, TV/movie backdrops, and anime episode resolution.
 
 ## `GUILD_ID`
 
@@ -627,6 +636,8 @@ The bot provides the following slash commands.
 | `/simkl-setchannel` | Manage Server | Set the channel where activity is posted |
 | `/simkl-status`     | Manage Server | View the bot's current status            |
 | `/simkl-checknow`   | Manage Server | Manually check SIMKL for new activity    |
+| `/simkl-style`      | Everyone      | Set your personal embed preferences     |
+| `/simkl-style-server` | Manage Server | Set the server-wide embed defaults    |
 
 ## `/simkl-link`
 
@@ -662,7 +673,56 @@ Requires the **Manage Server** permission.
 
 ---
 
-# 10. Episode Grouping
+# 10. Embed Styles and Activity Types
+
+Embed appearance is split into three independent settings:
+
+* **Style**
+  * **Rich** — large landscape artwork
+  * **Minimal** — small artwork thumbnail
+  * **Poster** — large portrait poster
+* **Artwork**
+  * **Automatic** — use the best available artwork for the activity
+  * **Poster only** — prefer poster artwork
+* **Activity text**
+  * **Short** — compact activity messages
+  * **Detailed** — more descriptive activity messages
+
+Use `/simkl-style` to set a personal preference. Personal preferences override the server default for that user.
+
+Server administrators can use `/simkl-style-server` to change the default for everyone who has not set a personal preference.
+
+The bot can report these activity types:
+
+* **started watching**
+* **planned to watch**
+* **completed**
+* **dropped**
+* **watched**
+* **rewatched**
+
+For a single episode, the bot uses the episode's TMDB still when available. Movies and planned TV/anime activity use landscape TMDB artwork. If TMDB artwork cannot be found, the bot falls back to the SIMKL poster where available.
+
+---
+
+# 11. Multi-server Support
+
+A single bot instance can now be used in multiple Discord servers.
+
+Configuration is separated into:
+
+* **Global:** Discord bot token, SIMKL Client ID, and TMDB API key.
+* **Per server:** activity channel and server-wide embed defaults.
+* **Per user:** SIMKL authentication and personal embed preferences.
+* **Per server + user:** tracking history, announced activity, watch timestamps, and polling checkpoints.
+
+Users link their SIMKL account separately in each server with `/simkl-link`. Unlinking with `/simkl-unlink` only removes the connection from the current server.
+
+When a user is linked to a new server, the bot seeds that server's existing watch history so old activity is not posted as new activity.
+
+---
+
+# 12. Episode Grouping
 
 When multiple consecutive episodes are watched, the bot groups them together.
 
@@ -698,7 +758,7 @@ Each individual episode is still tracked internally.
 
 ---
 
-# 11. Polling
+# 13. Polling
 
 The bot checks SIMKL for new activity every **60 minutes by default**.
 
@@ -740,7 +800,7 @@ This allows linked users to remain authenticated without having to repeatedly li
 
 ---
 
-# 12. Persistent Data
+# 14. Persistent Data
 
 The bot stores persistent information in:
 
@@ -783,7 +843,7 @@ Keep backups somewhere secure because the data contains authentication informati
 
 ---
 
-# 13. Security
+# 15. Security
 
 Never share or commit:
 
@@ -798,7 +858,7 @@ If you accidentally expose your Discord bot token, regenerate it through the Dis
 
 ---
 
-# 14. Troubleshooting
+# 16. Troubleshooting
 
 ## Bot does not start
 
@@ -907,7 +967,7 @@ sudo docker compose ps
 
 ---
 
-# 15. Updating from GitHub
+# 17. Updating from GitHub
 
 ## Docker Compose
 
@@ -996,7 +1056,7 @@ python bot.py
 
 ---
 
-# 16. Development
+# 18. Development
 
 Clone the repository:
 
@@ -1028,7 +1088,7 @@ python bot.py
 
 ---
 
-# 17. Docker Image
+# 19. Docker Image
 
 The project publishes a Docker image to GitHub Container Registry:
 
@@ -1042,7 +1102,7 @@ The image can therefore be updated without building the application locally.
 
 ---
 
-# 18. Repository Structure
+# 20. Repository Structure
 
 ```text
 SIMKLTrackerBot/

@@ -1,2156 +1,413 @@
-"""
-SIMKL Watch Activity Tracker for Discord (AUTH V2)
-
-Features:
-- Uses AUTH V2 Device / PIN flow
-- Automatic token refresh
-- Proactive token refresh before expiry
-- Smart polling via /sync/activities
-- 60-minute polling by default
-- Prevents overlapping polling cycles
-- Cooldown for manual /simkl-checknow requests
-- Groups consecutive watched episodes into ranges
-- Clickable SIMKL titles in embeds
-- TMDB landscape episode stills for TV/anime
-- TMDB landscape backdrops for movies
-- SIMKL poster fallback when TMDB has no suitable image
-- Shows episode titles for individual episodes
-- Uses a representative still for episode ranges
-- Uses TVDB mapping to improve anime TMDB season matching
-- Posts bulk-marked episodes without ever posting old history
-  (a user's existing history is recorded once, when they link)
-"""
-
-import asyncio
-import logging
-import os
-import time
+import asyncio, logging, os, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-
 from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from tmdb_client import TmdbClient
 
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
 load_dotenv()
+DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN"); SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID"); TMDB_API_KEY=os.getenv("TMDB_API_KEY"); GUILD_ID=os.getenv("GUILD_ID")
+try: POLL_INTERVAL_MINUTES=max(int(os.getenv("POLL_INTERVAL_MINUTES","60")),1)
+except ValueError: POLL_INTERVAL_MINUTES=60
+if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID: raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
+if not TMDB_API_KEY: raise SystemExit("Missing TMDB_API_KEY.")
 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-SIMKL_CLIENT_ID = os.getenv("SIMKL_CLIENT_ID")
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")
-GUILD_ID = os.getenv("GUILD_ID")
-
-# How often SIMKL activity is checked. Recommended: 60 minutes.
-try:
-    POLL_INTERVAL_MINUTES = max(
-        int(os.getenv("POLL_INTERVAL_MINUTES", "60")),
-        1,
-    )
-except ValueError:
-    POLL_INTERVAL_MINUTES = 60
-
-if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
-    raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
-
-if not TMDB_API_KEY:
-    raise SystemExit("Missing TMDB_API_KEY.")
-
-
-# ---------------------------------------------------------------------------
-# Constants and shared state
-# ---------------------------------------------------------------------------
-
-MEDIA_TYPES = ("shows", "anime", "movies")
-
-# Key used for each media type in the /sync/activities response.
-ACTIVITY_KEYS = {
-    "shows": "tv_shows",
-    "anime": "anime",
-    "movies": "movies",
-}
-
-# Embed colour and footer label for each media type.
-MEDIA_STYLES = {
-    "shows": (0x3498DB, "📺 TV"),
-    "anime": (0xE91E63, "🌸 Anime"),
-    "movies": (0xF1C40F, "🎬 Movie"),
-}
-
-# Full-history requests can be large.
-HISTORY_FETCH_TIMEOUT_SECONDS = 120
-
-# Prevents the background poll and /simkl-checknow from running together.
-poll_lock = asyncio.Lock()
-
-# Prevent /simkl-checknow from being spammed repeatedly.
-CHECKNOW_COOLDOWN_SECONDS = 30
-last_checknow_at = 0.0
-
-# Discord user IDs with a /simkl-link flow currently in progress.
-linking_users: set[str] = set()
-
-# Users whose SIMKL account ID has already been looked up since startup.
-profile_lookup_attempted: set[str] = set()
-
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-log = logging.getLogger("simkl-bot")
-
-
-# ---------------------------------------------------------------------------
-# Clients
-# ---------------------------------------------------------------------------
-
-simkl = SimklClient(SIMKL_CLIENT_ID)
-tmdb = TmdbClient(TMDB_API_KEY)
-
-intents = discord.Intents.default()
-
+MEDIA_TYPES=("shows","anime","movies"); ACTIVITY_KEYS={"shows":"tv_shows","anime":"anime","movies":"movies"}
+WATCHLIST_STATUSES=("watching","plantowatch","completed","dropped")
+STATUS_TEXT={"watching":"started watching","plantowatch":"planned to watch","completed":"completed","dropped":"dropped"}
+MEDIA_STYLES={"shows":(0x3498DB,"📺 TV"),"anime":(0xE91E63,"🌸 Anime"),"movies":(0xF1C40F,"🎬 Movie")}
+HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
+poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
+logging.basicConfig(level=logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s"); log=logging.getLogger("simkl-bot")
+simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY)
 
 class SimklBot(discord.Client):
     def __init__(self):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
+        super().__init__(intents=discord.Intents.default()); self.tree=app_commands.CommandTree(self)
     async def setup_hook(self):
         if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            log.info("Slash commands synced to guild %s.", GUILD_ID)
+            g=discord.Object(id=int(GUILD_ID)); self.tree.copy_global_to(guild=g); await self.tree.sync(guild=g); log.info("Slash commands synced to development guild %s.",GUILD_ID)
         else:
-            await self.tree.sync()
-            log.info("Slash commands synced globally.")
-
+            await self.tree.sync(); log.info("Slash commands synced globally.")
     async def close(self):
-        try:
-            await simkl.close()
-        except Exception:
-            pass
-
-        try:
-            await tmdb.close()
-        except Exception:
-            pass
-
+        for client in (simkl,tmdb):
+            try: await client.close()
+            except Exception: pass
         await super().close()
+bot=SimklBot()
 
-
-bot = SimklBot()
-
-
-# ---------------------------------------------------------------------------
-# General helpers
-# ---------------------------------------------------------------------------
-
-
-def to_iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def now_iso() -> str:
-    return to_iso(datetime.now(timezone.utc))
-
-
-def parse_iso(value: str) -> datetime:
-    """Parse a SIMKL timestamp; unparseable values become the earliest time."""
-    if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
-
+def to_iso(dt): return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+def now_iso(): return to_iso(datetime.now(timezone.utc))
+def parse_iso(v):
+    if not v: return datetime.min.replace(tzinfo=timezone.utc)
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        d=datetime.fromisoformat(v.replace("Z","+00:00")); return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception: return datetime.min.replace(tzinfo=timezone.utc)
+def calculate_token_expiry(v):
+    try: s=int(v)
+    except (TypeError,ValueError): return None
+    return to_iso(datetime.now(timezone.utc)+timedelta(seconds=s)) if s>0 else None
+def is_admin(i): return bool(i.guild and i.user.guild_permissions.manage_guild)
+def guild_id(i): return i.guild.id if i.guild else None
+def simkl_poster_url(p,size="_m"): return f"https://wsrv.nl/?url=https://simkl.in/posters/{p}{size}.webp&q=90" if p else None
+def simkl_profile_url(i): return f"https://simkl.com/{i}/" if i else None
+def account_id_from_settings(s): return (s.get("account") or {}).get("id") if isinstance(s,dict) else None
+def simkl_title_url(t,i,slug=None):
+    b={"movies":"https://simkl.com/movies","anime":"https://simkl.com/anime"}.get(t,"https://simkl.com/tv")
+    return f"{b}/{i}/{slug}" if slug else f"{b}/{i}"
+def episode_key(t,i,s,e): return f"{t}:{i}:{s}:{e}"
+def movie_key(t,i): return f"{t}:{i}"
 
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        return dt
-
-    except Exception:
-        return datetime.min.replace(tzinfo=timezone.utc)
-
-
-def calculate_token_expiry(expires_in) -> str | None:
-    """Convert SIMKL's expires_in into an absolute UTC timestamp."""
-    if expires_in is None:
-        return None
-
-    try:
-        seconds = int(expires_in)
-    except (TypeError, ValueError):
-        return None
-
-    if seconds <= 0:
-        return None
-
-    return to_iso(
-        datetime.now(timezone.utc)
-        + timedelta(seconds=seconds)
-    )
-
-
-def is_admin(interaction: discord.Interaction) -> bool:
-    if not interaction.guild:
-        return False
-
-    if GUILD_ID and interaction.guild.id != int(GUILD_ID):
-        return False
-
-    return bool(interaction.user.guild_permissions.manage_guild)
-
-
-def simkl_poster_url(
-    poster_path: str | None,
-    size: str = "_m",
-) -> str | None:
-    """
-    Build a SIMKL poster URL.
-
-    "_m" is the larger poster.
-    """
-    if not poster_path:
-        return None
-
-    return (
-        "https://wsrv.nl/?url=https://simkl.in/posters/"
-        f"{poster_path}{size}.webp&q=90"
-    )
-
-
-def simkl_profile_url(simkl_account_id) -> str | None:
-    if not simkl_account_id:
-        return None
-
-    return f"https://simkl.com/{simkl_account_id}/"
-
-
-def account_id_from_settings(settings) -> int | str | None:
-    if not isinstance(settings, dict):
-        return None
-
-    return (settings.get("account") or {}).get("id")
-
-
-def simkl_title_url(
-    media_type: str,
-    simkl_id,
-    slug: str | None = None,
-) -> str:
-    if media_type == "movies":
-        base = "https://simkl.com/movies"
-    elif media_type == "anime":
-        base = "https://simkl.com/anime"
-    else:
-        base = "https://simkl.com/tv"
-
-    if slug:
-        return f"{base}/{simkl_id}/{slug}"
-
-    return f"{base}/{simkl_id}"
-
-
-def episode_key(
-    media_type: str,
-    simkl_id,
-    season_num,
-    ep_num,
-) -> str:
-    return f"{media_type}:{simkl_id}:{season_num}:{ep_num}"
-
-
-def movie_key(media_type: str, simkl_id) -> str:
-    return f"{media_type}:{simkl_id}"
-
-
-# ---------------------------------------------------------------------------
-# SIMKL episode parsing
-# ---------------------------------------------------------------------------
-
-
-def iter_show_episodes(media_type: str, items):
-    """
-    Yield one dict per valid episode in a SIMKL shows/anime response.
-
-    For anime we retain BOTH:
-    - the original SIMKL season number
-    - the mapped TVDB season number
-
-    The mapped season is used for display/storage when available, while
-    the original season remains available for TMDB fallback matching.
-    """
-
+def iter_show_episodes(t,items):
     for item in items or []:
-        show = item.get("show") or {}
-        ids = show.get("ids") or {}
-
-        simkl_id = ids.get("simkl")
-
-        if simkl_id is None:
-            continue
-
-        anime_mapped_seasons = item.get("mapped_tvdb_seasons") or []
-
+        show=item.get("show") or {}; ids=show.get("ids") or {}; sid=ids.get("simkl")
+        if sid is None: continue
+        mapped=item.get("mapped_tvdb_seasons") or []
         for season in item.get("seasons") or []:
-            original_season_num = season.get("number")
-
-            if original_season_num is None:
-                continue
-
-            mapped_tvdb_season_num = None
-
-            if media_type == "anime" and anime_mapped_seasons:
-                if (
-                    isinstance(original_season_num, int)
-                    and original_season_num > 0
-                    and original_season_num <= len(anime_mapped_seasons)
-                ):
-                    mapped_tvdb_season_num = anime_mapped_seasons[
-                        original_season_num - 1
-                    ]
-
-            season_num = (
-                mapped_tvdb_season_num
-                if mapped_tvdb_season_num is not None
-                else original_season_num
-            )
-
+            original=season.get("number")
+            if original is None: continue
+            mapped_season=mapped[original-1] if t=="anime" and isinstance(original,int) and 0<original<=len(mapped) else None
+            sn=mapped_season if mapped_season is not None else original
             for ep in season.get("episodes") or []:
-                ep_num = ep.get("number")
+                en=ep.get("number")
+                if en is None: continue
+                wr=ep.get("watched_at")
+                yield {"show_title":show.get("title","a show"),"simkl_id":sid,"tmdb_id":ids.get("tmdb"),"tvdb_id":ids.get("tvdb"),"slug":ids.get("slug"),"poster":show.get("poster"),"season_num":sn,"original_season_num":original,"mapped_tvdb_season_num":mapped_season,"episode_number":en,"episode_title":ep.get("title"),"watched_raw":wr,"watched_dt":parse_iso(wr) if wr else None,"key":episode_key(t,sid,sn,en)}
 
-                if ep_num is None:
-                    continue
-
-                watched_raw = ep.get("watched_at")
-
-                yield {
-                    "show_title": show.get("title", "a show"),
-                    "simkl_id": simkl_id,
-                    "tmdb_id": ids.get("tmdb"),
-                    "tvdb_id": ids.get("tvdb"),
-                    "anilist_id": ids.get("anilist"),
-                    "kitsu_id": ids.get("kitsu"),
-                    "slug": ids.get("slug"),
-                    "poster": show.get("poster"),
-
-                    # Display/storage season.
-                    "season_num": season_num,
-
-                    # Original SIMKL anime season.
-                    "original_season_num": original_season_num,
-
-                    # TVDB mapped season, when available.
-                    "mapped_tvdb_season_num": mapped_tvdb_season_num,
-
-                    "episode_number": ep_num,
-                    "episode_title": ep.get("title"),
-                    "watched_raw": watched_raw,
-                    "watched_dt": (
-                        parse_iso(watched_raw)
-                        if watched_raw
-                        else None
-                    ),
-                    "key": episode_key(
-                        media_type,
-                        simkl_id,
-                        season_num,
-                        ep_num,
-                    ),
-                }
-
-
-# ---------------------------------------------------------------------------
-# Episode grouping
-# ---------------------------------------------------------------------------
-
-
-def format_episode_range(
-    season_number: int | None,
-    start_episode: int,
-    end_episode: int,
-) -> str:
-    if season_number is None:
-        if start_episode == end_episode:
-            return f"E{start_episode:02d}"
-
-        return (
-            f"E{start_episode:02d}-E{end_episode:02d}"
-        )
-
-    if start_episode == end_episode:
-        return (
-            f"S{season_number:02d}"
-            f"E{start_episode:02d}"
-        )
-
-    return (
-        f"S{season_number:02d}"
-        f"E{start_episode:02d}"
-        f"-E{end_episode:02d}"
-    )
-
-
-def group_consecutive_episodes(episodes):
-    """Split episodes into runs of consecutive episode numbers."""
-
-    if not episodes:
-        return []
-
-    episodes = sorted(
-        episodes,
-        key=lambda x: x["episode_number"],
-    )
-
-    groups = []
-    current = [episodes[0]]
-
-    for episode in episodes[1:]:
-        if (
-            episode["episode_number"]
-            == current[-1]["episode_number"] + 1
-        ):
-            current.append(episode)
-        else:
-            groups.append(current)
-            current = [episode]
-
-    groups.append(current)
-
+def format_episode_range(s,a,b):
+    if s is None: return f"E{a:02d}" if a==b else f"E{a:02d}-E{b:02d}"
+    return f"S{s:02d}E{a:02d}" if a==b else f"S{s:02d}E{a:02d}-E{b:02d}"
+def group_consecutive(es):
+    es=sorted(es,key=lambda x:x["episode_number"]); groups=[]
+    for e in es:
+        if not groups or e["episode_number"]!=groups[-1][-1]["episode_number"]+1: groups.append([e])
+        else: groups[-1].append(e)
     return groups
 
-
-# ---------------------------------------------------------------------------
-# TMDB episode helpers
-# ---------------------------------------------------------------------------
-
-
-async def find_episode_tmdb_data(
-    media_type: str,
-    episode: dict,
-) -> dict | None:
-    """
-    Find the best TMDB match for an episode.
-
-    Normal TV:
-        Try the SIMKL TMDB series ID directly.
-
-    Anime:
-        Try the mapped/original season candidates and also resolve the
-        SIMKL TVDB ID through TMDB when necessary.
-    """
-
-    tmdb_id = episode.get("tmdb_id")
-    tvdb_id = episode.get("tvdb_id")
-    episode_number = episode.get("episode_number")
-    episode_title = episode.get("episode_title")
-
-    if episode_number is None:
-        return None
-
-    # ---------------------------------------------------------------
-    # Anime
-    # ---------------------------------------------------------------
-
-    if media_type == "anime":
-        season_candidates = []
-
-        for value in (
-            episode.get("season_num"),
-            episode.get("mapped_tvdb_season_num"),
-            episode.get("original_season_num"),
-        ):
-            if value is None:
-                continue
-
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                continue
-
-            if value not in season_candidates:
-                season_candidates.append(value)
-
-        result = await tmdb.find_anime_episode(
-            tmdb_id,
-            tvdb_id,
-            season_candidates,
-            episode_number,
-            episode_title=episode_title,
-        )
-
-        if result:
-            return result
-
-        return None
-
-    # ---------------------------------------------------------------
-    # Normal TV
-    # ---------------------------------------------------------------
-
-    if tmdb_id is not None:
-        try:
-            tmdb_episode = await tmdb.get_episode_details(
-                tmdb_id,
-                episode.get("season_num"),
-                episode_number,
-            )
-        except Exception:
-            tmdb_episode = None
-
-        if tmdb_episode:
-            return {
-                "series_id": int(tmdb_id),
-                "season_number": int(episode.get("season_num")),
-                "episode_number": int(episode_number),
-                "episode": tmdb_episode,
-            }
-
-    # ---------------------------------------------------------------
-    # TVDB fallback
-    # ---------------------------------------------------------------
-
-    if tvdb_id is not None:
-        resolved_series_id = await tmdb.find_series_by_tvdb(tvdb_id)
-
-        if resolved_series_id:
-            try:
-                tmdb_episode = await tmdb.get_episode_details(
-                    resolved_series_id,
-                    episode.get("season_num"),
-                    episode_number,
-                )
-            except Exception:
-                tmdb_episode = None
-
-            if tmdb_episode:
-                return {
-                    "series_id": resolved_series_id,
-                    "season_number": int(
-                        episode.get("season_num")
-                    ),
-                    "episode_number": int(episode_number),
-                    "episode": tmdb_episode,
-                }
-
-    return None
-
-
-async def get_episode_media(
-    media_type: str,
-    episode: dict,
-) -> tuple[str | None, str | None]:
-    """
-    Return:
-
-        (still_url, episode_title)
-
-    The TMDB episode still is preferred.
-    SIMKL's episode title remains the preferred displayed title.
-    """
-
-    result = await find_episode_tmdb_data(
-        media_type,
-        episode,
-    )
-
-    if not result:
-        return None, episode.get("episode_title")
-
-    series_id = result.get("series_id")
-    season_number = result.get("season_number")
-    episode_number = result.get("episode_number")
-
-    still_url = None
-
-    if (
-        series_id is not None
-        and season_number is not None
-        and episode_number is not None
-    ):
-        try:
-            still_url = await tmdb.get_episode_still(
-                series_id,
-                season_number,
-                episode_number,
-            )
-        except Exception:
-            log.warning(
-                "Could not retrieve TMDB still for %s S%sE%s.",
-                series_id,
-                season_number,
-                episode_number,
-                exc_info=True,
-            )
-
-    tmdb_episode = result.get("episode") or {}
-    tmdb_episode_title = tmdb_episode.get("name")
-
-    episode_title = (
-        episode.get("episode_title")
-        or tmdb_episode_title
-    )
-
-    return still_url, episode_title
-
-
-# ---------------------------------------------------------------------------
-# Embeds
-# ---------------------------------------------------------------------------
-
-
-def build_activity_embed(
-    media_type: str,
-    description: str,
-    timestamp: datetime,
-    display_name: str,
-    member,
-    image_url: str | None,
-    profile_url: str | None,
-    title: str | None = None,
-    title_url: str | None = None,
-) -> discord.Embed:
-    color, label = MEDIA_STYLES[media_type]
-
-    embed = discord.Embed(
-        title=title,
-        url=title_url,
-        description=description,
-        color=color,
-        timestamp=timestamp,
-    )
-
-    embed.set_author(
-        name=f"{display_name}'s Activity",
-        url=profile_url,
-        icon_url=(
-            member.display_avatar.url
-            if member
-            else None
-        ),
-    )
-
-    if image_url:
-        embed.set_image(url=image_url)
-
-    embed.set_footer(
-        text=f"{label} · SIMKL"
-    )
-
-    return embed
-
-
-async def send_embed(
-    channel,
-    embed: discord.Embed,
-    what: str,
-) -> bool:
-    """Send an embed; return False if it failed."""
-
-    try:
-        await channel.send(embed=embed)
-        return True
-    except Exception:
-        log.exception(
-            "Failed to send %s embed.",
-            what,
-        )
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Authentication
-# ---------------------------------------------------------------------------
-
-
-async def get_valid_token(
-    discord_user_id: str,
-    user_data: dict,
-) -> str:
-    access_token = user_data.get("simkl_token")
-
-    if not access_token:
-        raise SimklAuthError(
-            "No SIMKL access token stored."
-        )
-
-    token_expires_at = user_data.get(
-        "token_expires_at"
-    )
-
-    if token_expires_at:
-        expiry_dt = parse_iso(token_expires_at)
-
-        if expiry_dt <= (
-            datetime.now(timezone.utc)
-            + timedelta(days=1)
-        ):
-            log.info(
-                "SIMKL token for user %s is expiring "
-                "within 24 hours. Refreshing proactively.",
-                discord_user_id,
-            )
-
-            try:
-                return await refresh_user_token(
-                    discord_user_id,
-                    user_data,
-                )
-            except SimklAuthError:
-                log.warning(
-                    "Proactive SIMKL token refresh failed "
-                    "for user %s. Continuing with existing token.",
-                    discord_user_id,
-                )
-
-    return access_token
-
-
-async def refresh_user_token(
-    discord_user_id: str,
-    user_data: dict,
-) -> str:
-    refresh_token = user_data.get(
-        "refresh_token"
-    )
-
-    if not refresh_token:
-        raise SimklAuthError(
-            "SIMKL token expired and no refresh token is available."
-        )
-
-    new_tokens = await simkl.refresh_token(
-        refresh_token
-    )
-
-    if not new_tokens:
-        raise SimklAuthError(
-            "SIMKL token refresh failed."
-        )
-
-    new_access_token = new_tokens.get(
-        "access_token"
-    )
-
-    if not new_access_token:
-        raise SimklAuthError(
-            "SIMKL token refresh returned no access token."
-        )
-
-    new_refresh_token = new_tokens.get(
-        "refresh_token"
-    )
-
-    token_expires_at = calculate_token_expiry(
-        new_tokens.get("expires_in")
-    )
-
-    await storage.update_tokens(
-        discord_user_id,
-        new_access_token,
-        new_refresh_token,
-        token_expires_at,
-    )
-
-    user_data["simkl_token"] = new_access_token
-
-    if new_refresh_token:
-        user_data["refresh_token"] = new_refresh_token
-
-    user_data["token_expires_at"] = (
-        token_expires_at
-    )
-
-    log.info(
-        "Refreshed SIMKL token for user %s.",
-        discord_user_id,
-    )
-
-    return new_access_token
-
-
-async def call_with_refresh(
-    discord_user_id: str,
-    user_data: dict,
-    token: str,
-    func,
-    *args,
-    **kwargs,
-):
-    """
-    Call func(token, *args, **kwargs).
-
-    If SIMKL says the token is invalid, refresh it once
-    and retry the same call.
-
-    Returns:
-        (result, token)
-    """
-
-    try:
-        return (
-            await func(token, *args, **kwargs),
-            token,
-        )
-
+async def episode_media(t,e):
+    candidates=[]
+    for v in (e.get("season_num"),e.get("mapped_tvdb_season_num"),e.get("original_season_num")):
+        try: v=int(v)
+        except (TypeError,ValueError): continue
+        if v not in candidates: candidates.append(v)
+    if t=="anime": r=await tmdb.find_anime_episode(e.get("tmdb_id"),e.get("tvdb_id"),candidates,e["episode_number"],episode_title=e.get("episode_title"))
+    else:
+        r=None
+        if e.get("tmdb_id") is not None:
+            d=await tmdb.get_episode_details(e["tmdb_id"],e.get("season_num"),e["episode_number"])
+            if d: r={"series_id":int(e["tmdb_id"]),"season_number":int(e["season_num"]),"episode_number":e["episode_number"],"episode":d}
+        if not r and e.get("tvdb_id") is not None:
+            sid=await tmdb.find_series_by_tvdb(e["tvdb_id"])
+            if sid:
+                d=await tmdb.get_episode_details(sid,e.get("season_num"),e["episode_number"])
+                if d: r={"series_id":sid,"season_number":int(e["season_num"]),"episode_number":e["episode_number"],"episode":d}
+    if not r: return None,e.get("episode_title")
+    still=await tmdb.get_episode_still(r["series_id"],r["season_number"],r["episode_number"])
+    return still,e.get("episode_title") or (r.get("episode") or {}).get("name")
+
+async def prefs(g,u): return await storage.get_embed_preferences(g,u)
+def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,preferences=None):
+    color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short"}; p.update(preferences or {})
+    e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
+    e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
+    selected=poster if p["artwork"]=="poster" or p["style"]=="poster" else image
+    selected=selected or poster or image
+    if selected:
+        if p["style"]=="minimal": e.set_thumbnail(url=selected)
+        else: e.set_image(url=selected)
+    e.set_footer(text=f"{label} · SIMKL"); return e
+async def send_embed(ch,e,what):
+    try: await ch.send(embed=e); return True
+    except Exception: log.exception("Failed to send %s embed.",what); return False
+
+async def refresh_user_token(uid,u):
+    rt=u.get("refresh_token")
+    if not rt: raise SimklAuthError("No refresh token.")
+    tok=await simkl.refresh_token(rt)
+    if not tok or not tok.get("access_token"): raise SimklAuthError("Token refresh failed.")
+    access=tok["access_token"]; newrt=tok.get("refresh_token"); exp=calculate_token_expiry(tok.get("expires_in"))
+    await storage.update_tokens(uid,access,newrt,exp); u["simkl_token"]=access; u["refresh_token"]=newrt or rt; u["token_expires_at"]=exp; return access
+async def valid_token(uid,u):
+    if not u.get("simkl_token"): raise SimklAuthError("No SIMKL token.")
+    if u.get("token_expires_at") and parse_iso(u["token_expires_at"])<=datetime.now(timezone.utc)+timedelta(days=1):
+        try: return await refresh_user_token(uid,u)
+        except SimklAuthError: pass
+    return u["simkl_token"]
+async def call_refresh(uid,u,token,fn,*a,**kw):
+    try: return await fn(token,*a,**kw),token
     except SimklAuthError:
-        token = await refresh_user_token(
-            discord_user_id,
-            user_data,
-        )
+        token=await refresh_user_token(uid,u); return await fn(token,*a,**kw),token
 
-        return (
-            await func(
-                token,
-                *args,
-                **kwargs,
-            ),
-            token,
-        )
-
-
-# ---------------------------------------------------------------------------
-# History seeding
-# ---------------------------------------------------------------------------
-
-
-async def seed_history(
-    discord_user_id: str,
-    user_data: dict,
-    token: str,
-) -> str:
-    """
-    Record everything the user had already watched as announced.
-
-    Existing history is never posted.
-
-    Anything watched after the user's last_checked timestamp
-    is left available for normal polling.
-    """
-
-    last_checked = (
-        user_data.get("last_checked")
-        or {}
-    )
-
-    keys = []
-
-    for media_type in MEDIA_TYPES:
-        since_dt = parse_iso(
-            last_checked.get(
-                media_type,
-                EPOCH_ISO,
-            )
-        )
-
-        items, token = await call_with_refresh(
-            discord_user_id,
-            user_data,
-            token,
-            simkl.get_all_items,
-            media_type,
-            timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
-        )
-
-        if media_type == "movies":
-            for item in items or []:
-                movie = item.get("movie") or {}
-                simkl_id = (
-                    movie.get("ids") or {}
-                ).get("simkl")
-
-                if simkl_id is None:
-                    continue
-
-                watched_raw = item.get(
-                    "last_watched_at"
-                )
-
-                if (
-                    watched_raw
-                    and parse_iso(watched_raw) > since_dt
-                ):
-                    continue
-
-                keys.append(
-                    movie_key(
-                        media_type,
-                        simkl_id,
-                    )
-                )
-
+async def seed_history(g,uid,u,token):
+    last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}
+    for t in MEDIA_TYPES:
+        since=parse_iso(last.get(t,EPOCH_ISO)); items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
+        if t=="movies":
+            for x in items or []:
+                m=x.get("movie") or {}; sid=(m.get("ids") or {}).get("simkl"); wr=x.get("last_watched_at")
+                if sid is None or (wr and parse_iso(wr)>since): continue
+                k=movie_key(t,sid); keys.append(k)
+                if x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
+                if wr: watches[k]=wr
         else:
-            for ep in iter_show_episodes(
-                media_type,
-                items,
-            ):
-                if (
-                    ep["watched_dt"] is not None
-                    and ep["watched_dt"] > since_dt
-                ):
-                    continue
+            for x in items or []:
+                m=x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl")
+                if sid is not None and x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
+            for e in iter_show_episodes(t,items):
+                if e["watched_dt"] is None or e["watched_dt"]<=since:
+                    keys.append(e["key"])
+                    if e.get("watched_raw"): watches[e["key"]]=e["watched_raw"]
+    await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches); return token
 
-                keys.append(ep["key"])
+async def resolve_member(g,uid):
+    guild=bot.get_guild(int(g))
+    if not guild: return None,"Someone"
+    m=guild.get_member(int(uid))
+    if not m:
+        try: m=await guild.fetch_member(int(uid))
+        except Exception: return None,"Someone"
+    return m,m.display_name
 
-    await storage.mark_history_seeded(
-        discord_user_id,
-        keys,
-    )
+async def process_shows(ch,g,uid,name,member,t,items,profile):
+    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); groups=defaultdict(list)
+    for e in iter_show_episodes(t,items):
+        if e["watched_dt"] is None: continue
+        prev=watches.get(e["key"]); prevdt=parse_iso(prev) if prev else None
+        rw=e["key"] in announced and prevdt and e["watched_dt"]>prevdt
+        if e["key"] not in announced or rw: groups[(e["simkl_id"],e["season_num"],"rewatched" if rw else "watched")].append(e)
+    count=0; ok=True; pending={}
+    for (sid,sn,kind),es in groups.items():
+        es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
+        for grp in group_consecutive(es):
+            try:
+                image,ep_title=await episode_media(t,grp[0])
+            except Exception:
+                log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
+                image,ep_title=None,grp[0].get("episode_title")
+            label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
+            desc=f"{verb} **{label}**"
+            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
+            if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*"
+            e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
+            if not await send_embed(ch,e,"episode"): ok=False; continue
+            await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
+    if pending: await storage.update_activity_state(g,uid,watch_times=pending)
+    return count,ok
 
-    user_data["history_seeded"] = True
+async def process_movies(ch,g,uid,name,member,items,since,profile):
+    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True; pending={}
+    for x in items or []:
+        m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
+        if sid is None or not wr: continue
+        dt=parse_iso(wr); k=movie_key("movies",sid); prev=watches.get(k); prevdt=parse_iso(prev) if prev else None; rw=k in announced and prevdt and dt>prevdt
+        if k in announced and not rw: continue
+        if k not in announced and dt<=since: continue
+        title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
+        if ids.get("tmdb") is not None:
+            try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
+            except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
+        verb="rewatched" if rw else "watched a movie"; desc=verb if p["activity_text"]!="detailed" else f"{verb} **{title}**"
+        e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
+        if not await send_embed(ch,e,"movie"): ok=False; continue
+        await storage.add_announced(g,uid,[k]); pending[k]=wr; count+=1
+    if pending: await storage.update_activity_state(g,uid,watch_times=pending)
+    return count,ok
 
-    log.info(
-        "Recorded %d existing SIMKL history item(s) "
-        "for user %s.",
-        len(keys),
-        discord_user_id,
-    )
+async def process_status(ch,g,uid,name,member,t,items,profile):
+    state=await storage.get_activity_state(g,uid); statuses=state["statuses"]; baseline=not state["statuses_seeded"]; p=await prefs(g,uid); pending={}; count=0; ok=True
+    for x in items or []:
+        m=(x.get("movie") if t=="movies" else x.get("show")) or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); status=x.get("status")
+        if sid is None or status not in WATCHLIST_STATUSES: continue
+        key=f"{t}:{sid}"; pending[key]=status
+        if baseline or statuses.get(key)==status: continue
+        title=m.get("title") or "Untitled"; poster=simkl_poster_url(m.get("poster")); image=None
+        if ids.get("tmdb") is not None:
+            try:
+                image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
+            except Exception:
+                log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
+        desc=STATUS_TEXT[status] if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**"
+        e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
+        if not await send_embed(ch,e,status): ok=False; continue
+        count+=1
+    if pending and ok: await storage.update_activity_state(g,uid,statuses=pending,statuses_seeded=True)
+    return count,ok
 
-    return token
-
-
-# ---------------------------------------------------------------------------
-# /simkl-link
-# ---------------------------------------------------------------------------
-
-
-@bot.tree.command(
-    name="simkl-link",
-    description=(
-        "Link your SIMKL account so your watch "
-        "activity gets posted."
-    ),
-)
-async def simkl_link(
-    interaction: discord.Interaction,
-):
-    discord_user_id = str(
-        interaction.user.id
-    )
-
-    if discord_user_id in linking_users:
-        await interaction.response.send_message(
-            "You already have a linking code waiting. "
-            "Finish that one first, or wait for it to expire.",
-            ephemeral=True,
-        )
-        return
-
-    linking_users.add(
-        discord_user_id
-    )
-
+async def poll_one(ch,g,uid,u,gu):
+    token=await valid_token(uid,u)
+    member,name=await resolve_member(g,uid)
+    if not member:
+        log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
+        return 0
     try:
-        await run_link_flow(
-            interaction,
-            discord_user_id,
-        )
-    finally:
-        linking_users.discard(
-            discord_user_id
-        )
-
-
-async def run_link_flow(
-    interaction: discord.Interaction,
-    discord_user_id: str,
-):
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
-    try:
-        pin_data = await simkl.start_pin_auth()
-
-    except Exception as e:
-        log.exception(
-            "Failed to start SIMKL PIN authentication."
-        )
-
-        await interaction.followup.send(
-            f"Couldn't reach SIMKL: {e}",
-            ephemeral=True,
-        )
-        return
-
-    user_code = pin_data["user_code"]
-    device_code = pin_data["device_code"]
-
-    verification_url = pin_data.get(
-        "verification_uri",
-        "https://simkl.com/pin",
-    )
-
-    expires_in = pin_data.get(
-        "expires_in",
-        900,
-    )
-
-    interval = pin_data.get(
-        "interval",
-        5,
-    )
-
-    await interaction.followup.send(
-        f"**Step 1:** Go to {verification_url}\n"
-        f"**Step 2:** Enter this code: `{user_code}`\n\n"
-        f"The code expires in about "
-        f"{expires_in // 60} minutes.",
-        ephemeral=True,
-    )
-
-    elapsed = 0
-    tokens = None
-
-    while elapsed < expires_in:
-        await asyncio.sleep(interval)
-        elapsed += interval
-
+        activities,token=await call_refresh(uid,u,token,simkl.get_activities)
+    except Exception:
+        log.exception("Failed to get SIMKL activity timestamps for user %s.",uid)
+        return 0
+    if not gu.get("history_seeded"):
         try:
-            tokens = await simkl.poll_pin(
-                device_code
-            )
-
-        except SimklSlowDown:
-            interval += 5
-            continue
-
-        except SimklAuthError as e:
-            log.info(
-                "SIMKL PIN for user %s ended: %s",
-                discord_user_id,
-                e,
-            )
-            break
-
+            token=await seed_history(g,uid,u,token)
+            gu["history_seeded"]=True
         except Exception:
-            log.warning(
-                "SIMKL PIN poll failed; will retry.",
-                exc_info=True,
-            )
+            log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
+            return 0
+    if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
+        profile_lookup_attempted.add(uid)
+        try:
+            settings,token=await call_refresh(uid,u,token,simkl.get_user_settings)
+            aid=account_id_from_settings(settings)
+            if aid:
+                await storage.set_account_id(uid,aid)
+                u["simkl_account_id"]=aid
+        except Exception:
+            log.warning("Profile lookup failed for %s.",uid,exc_info=True)
+    profile=simkl_profile_url(u.get("simkl_account_id"))
+    last=await storage.get_last_checked(g,uid)
+    posted=0
+    for t in MEDIA_TYPES:
+        since=last.get(t,EPOCH_ISO)
+        sdt=parse_iso(since)
+        a=activities.get(ACTIVITY_KEYS[t]) or {}
+        stamp=a.get("all")
+        log.info("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
+        if not stamp or parse_iso(stamp)<=sdt:
             continue
+        try:
+            items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=since)
+            sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
+            wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
+            if so and wo:
+                await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
+                posted+=wc
+            else:
+                log.warning("Some %s posts failed for user %s; checkpoint not advanced.",t,uid)
+        except Exception:
+            log.exception("Failed processing %s activity for user %s.",t,uid)
+        await storage.flush()
+    return posted
 
-        if tokens:
-            break
+async def poll_all(g=None):
+    targets=await storage.get_poll_targets(g)
+    posted=0
+    for x in targets:
+        ch=bot.get_channel(int(x["channel_id"]))
+        if ch is None:
+            try: ch=await bot.fetch_channel(int(x["channel_id"]))
+            except Exception: continue
+        try: posted+=await poll_one(ch,int(x["guild_id"]),x["discord_user_id"],x["user_data"],x["guild_user_data"])
+        except SimklAuthError: log.warning("Auth failed for %s.",x["discord_user_id"])
+        except Exception: log.exception("Polling failed for %s.",x["discord_user_id"])
+    return posted
 
-    if not tokens:
-        await dm_or_followup(
-            interaction,
-            "⌛ The SIMKL linking code expired or "
-            "was cancelled. Run `/simkl-link` again.",
-            followup_text=None,
-        )
-        return
+STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
+ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster")]
+TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
+NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
 
-    access_token = tokens[
-        "access_token"
-    ]
-
-    refresh_token = tokens.get(
-        "refresh_token"
-    )
-
-    token_expires_at = calculate_token_expiry(
-        tokens.get("expires_in")
-    )
-
-    simkl_account_id = None
-
+@bot.tree.command(name="simkl-link",description="Link your SIMKL account in this server.")
+async def simkl_link(i):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    uid=str(i.user.id); key=f"{g}:{uid}"
+    if key in linking_users: await i.response.send_message("You already have a linking code waiting.",ephemeral=True); return
+    linking_users.add(key)
     try:
-        settings = await simkl.get_user_settings(
-            access_token
-        )
+        await i.response.defer(ephemeral=True); pin=await simkl.start_pin_auth(); code=pin["user_code"]; device=pin["device_code"]; expires=pin.get("expires_in",900); interval=pin.get("interval",5); url=pin.get("verification_uri","https://simkl.com/pin")
+        await i.followup.send(f"Go to {url}\nEnter this code: {code}\nThe code expires in about {expires//60} minutes.",ephemeral=True)
+        elapsed=0; tokens=None
+        while elapsed<expires:
+            await asyncio.sleep(interval); elapsed+=interval
+            try: tokens=await simkl.poll_pin(device)
+            except SimklSlowDown: interval+=5; continue
+            except SimklAuthError: break
+            except Exception: log.warning("PIN poll failed.",exc_info=True); continue
+            if tokens: break
+        if not tokens: await i.followup.send("The SIMKL linking code expired or was cancelled. Run /simkl-link again.",ephemeral=True); return
+        access=tokens["access_token"]; refresh=tokens.get("refresh_token"); exp=calculate_token_expiry(tokens.get("expires_in")); aid=None
+        try:
+            settings=await simkl.get_user_settings(access); aid=account_id_from_settings(settings); username=settings.get("user",{}).get("name") or settings.get("account",{}).get("id") or "SIMKL user"
+        except Exception: username="SIMKL user"
+        await storage.link_user(g,uid,access,refresh,username,now_iso(),exp,aid)
+        await i.followup.send(f"Linked as {username} in this server.",ephemeral=True)
+        try: await seed_history(g,uid,{"simkl_token":access,"refresh_token":refresh,"token_expires_at":exp},access)
+        except Exception: log.warning("Initial history seed failed.",exc_info=True)
+    finally: linking_users.discard(key)
 
-        simkl_account_id = (
-            account_id_from_settings(
-                settings
-            )
-        )
+@bot.tree.command(name="simkl-unlink",description="Unlink your SIMKL account from this server.")
+async def simkl_unlink(i):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    ok=await storage.unlink_user(g,str(i.user.id)); await i.response.send_message("Your SIMKL account has been unlinked from this server." if ok else "You don't have a linked SIMKL account in this server.",ephemeral=True)
 
-        simkl_username = (
-            settings.get("user", {}).get("name")
-            or settings.get("account", {}).get("id")
-            or "SIMKL user"
-        )
+@bot.tree.command(name="simkl-style",description="Choose your personal SIMKL activity embed preferences.")
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
+async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    uid=str(i.user.id)
+    if style is None and artwork is None and activity_text is None:
+        p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+    await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
+    p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.",ephemeral=True)
 
-    except Exception:
-        simkl_username = "SIMKL user"
+@bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
+async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    if style is None and artwork is None and activity_text is None:
+        p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+    await storage.set_server_embed_preferences(g,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
+    p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nUsers with personal settings will continue using their own preferences.",ephemeral=True)
 
-    link_time = now_iso()
+@bot.tree.command(name="simkl-setchannel",description="(Admin) Set the channel where this server's watch activity is posted.")
+async def simkl_setchannel(i,channel:discord.TextChannel=None):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    target=channel or i.channel; await storage.set_channel(g,target.id); await i.response.send_message(f"Watch activity for this server will now be posted in {target.mention}.",ephemeral=True)
 
-    await storage.link_user(
-        discord_user_id,
-        access_token,
-        refresh_token,
-        simkl_username,
-        link_time,
-        token_expires_at,
-        simkl_account_id,
-    )
+@bot.tree.command(name="simkl-status",description="(Admin) Show this server's configuration and linked accounts.")
+async def simkl_status(i):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    d=await storage.get_all(); sg=(d.get("guilds") or {}).get(str(g),{}); users=sg.get("users") or {}; allu=d.get("users") or {}; ch=sg.get("channel_id"); text=f"<#{ch}>" if ch else "**not set**"
+    linked="\n".join(f"• <@{uid}> — SIMKL: **{(allu.get(uid) or {}).get('simkl_username','unknown')}**" for uid in users) if users else "No linked accounts."
+    await i.response.send_message(f"**Posting channel:** {text}\n**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n\n**Linked accounts in this server:**\n{linked}",ephemeral=True)
 
-    await dm_or_followup(
-        interaction,
-        (
-            f"✅ Linked! Your SIMKL account "
-            f"(**{simkl_username}**) is now connected."
-        ),
-        followup_text=(
-            f"✅ Linked as **{simkl_username}**!"
-        ),
-    )
-
-    user_data = {
-        "simkl_token": access_token,
-        "refresh_token": refresh_token,
-        "token_expires_at": token_expires_at,
-        "last_checked": {
-            media_type: link_time
-            for media_type in MEDIA_TYPES
-        },
-    }
-
-    try:
-        await seed_history(
-            discord_user_id,
-            user_data,
-            access_token,
-        )
-
-    except Exception:
-        log.warning(
-            "Couldn't record SIMKL history for user %s yet; "
-            "will retry on the next poll.",
-            discord_user_id,
-            exc_info=True,
-        )
-
-
-async def dm_or_followup(
-    interaction: discord.Interaction,
-    dm_text: str,
-    followup_text: str | None,
-):
-    """DM the user; fall back to an ephemeral follow-up."""
-
-    try:
-        await interaction.user.send(
-            dm_text
-        )
-        return
-
-    except discord.HTTPException:
-        pass
-
-    if followup_text is None:
-        return
-
-    try:
-        await interaction.followup.send(
-            followup_text,
-            ephemeral=True,
-        )
-
-    except discord.HTTPException:
-        log.info(
-            "Couldn't notify user %s about linking.",
-            interaction.user.id,
-        )
-
-
-# ---------------------------------------------------------------------------
-# /simkl-unlink
-# ---------------------------------------------------------------------------
-
-
-@bot.tree.command(
-    name="simkl-unlink",
-    description="Unlink your SIMKL account from this bot.",
-)
-async def simkl_unlink(
-    interaction: discord.Interaction,
-):
-    removed = await storage.unlink_user(
-        str(interaction.user.id)
-    )
-
-    if removed:
-        message = (
-            "Your SIMKL account has been unlinked."
-        )
-    else:
-        message = (
-            "You don't have a linked SIMKL account."
-        )
-
-    await interaction.response.send_message(
-        message,
-        ephemeral=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Admin commands
-# ---------------------------------------------------------------------------
-
-NOT_ADMIN_MESSAGE = (
-    "You need the Manage Server permission to do that."
-)
-
-
-@bot.tree.command(
-    name="simkl-setchannel",
-    description=(
-        "(Admin) Set the channel where "
-        "watch activity is posted."
-    ),
-)
-@app_commands.describe(
-    channel=(
-        "The channel to post in. "
-        "Defaults to the current channel."
-    )
-)
-async def simkl_setchannel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel = None,
-):
-    if not is_admin(interaction):
-        await interaction.response.send_message(
-            NOT_ADMIN_MESSAGE,
-            ephemeral=True,
-        )
-        return
-
-    target = channel or interaction.channel
-
-    await storage.set_channel(
-        target.id
-    )
-
-    await interaction.response.send_message(
-        f"Watch activity will now be posted in "
-        f"{target.mention}.",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(
-    name="simkl-status",
-    description=(
-        "(Admin) Show bot configuration "
-        "and linked accounts."
-    ),
-)
-async def simkl_status(
-    interaction: discord.Interaction,
-):
-    if not is_admin(interaction):
-        await interaction.response.send_message(
-            NOT_ADMIN_MESSAGE,
-            ephemeral=True,
-        )
-        return
-
-    data = await storage.get_all()
-
-    channel_id = data.get(
-        "channel_id"
-    )
-
-    channel_text = (
-        f"<#{channel_id}>"
-        if channel_id
-        else "**not set**"
-    )
-
-    users = data.get(
-        "users",
-        {}
-    )
-
-    if users:
-        users_text = "\n".join(
-            (
-                f"• <@{uid}> — SIMKL: "
-                f"**{user_data.get('simkl_username', 'unknown')}**"
-            )
-            for uid, user_data in users.items()
-        )
-    else:
-        users_text = (
-            "No linked accounts."
-        )
-
-    await interaction.response.send_message(
-        f"**Posting channel:** {channel_text}\n"
-        f"**Poll interval:** every "
-        f"{POLL_INTERVAL_MINUTES} minute(s)\n\n"
-        f"**Linked accounts:**\n{users_text}",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(
-    name="simkl-checknow",
-    description=(
-        "(Admin) Immediately check "
-        "everyone's SIMKL activity."
-    ),
-)
-async def simkl_checknow(
-    interaction: discord.Interaction,
-):
+@bot.tree.command(name="simkl-checknow",description="(Admin) Immediately check this server's SIMKL activity.")
+async def simkl_checknow(i):
     global last_checknow_at
-
-    if not is_admin(interaction):
-        await interaction.response.send_message(
-            NOT_ADMIN_MESSAGE,
-            ephemeral=True,
-        )
-        return
-
-    elapsed = (
-        time.monotonic()
-        - last_checknow_at
-    )
-
-    if elapsed < CHECKNOW_COOLDOWN_SECONDS:
-        remaining = (
-            int(
-                CHECKNOW_COOLDOWN_SECONDS
-                - elapsed
-            )
-            + 1
-        )
-
-        await interaction.response.send_message(
-            f"Please wait about {remaining} "
-            f"second(s) before using "
-            f"`/simkl-checknow` again.",
-            ephemeral=True,
-        )
-        return
-
-    if poll_lock.locked():
-        await interaction.response.send_message(
-            "A SIMKL activity check is already running. "
-            "Please wait for it to finish.",
-            ephemeral=True,
-        )
-        return
-
-    await poll_lock.acquire()
-
-    last_checknow_at = time.monotonic()
-
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    if time.monotonic()-last_checknow_at<CHECKNOW_COOLDOWN_SECONDS:
+        await i.response.send_message("Please wait before using /simkl-checknow again.",ephemeral=True); return
+    if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
+    await poll_lock.acquire(); last_checknow_at=time.monotonic()
     try:
-        await interaction.response.send_message(
-            "Checking SIMKL activity now...",
-            ephemeral=True,
-        )
-
-        await _poll_all_users()
-
+        await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
+        posted=await poll_all(g)
     finally:
         poll_lock.release()
+    await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
-    await interaction.followup.send(
-        "Done.",
-        ephemeral=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Process TV / Anime
-# ---------------------------------------------------------------------------
-
-
-async def process_show_items(
-    channel,
-    discord_user_id: str,
-    display_name: str,
-    member,
-    media_type: str,
-    items,
-    profile_url: str | None = None,
-):
-    """
-    Post every watched episode that hasn't been announced yet.
-
-    Single episodes:
-        Title
-        watched S01E05
-        *Episode Title*
-        landscape still
-
-    Episode ranges:
-        Title
-        watched S01E05-E08
-        representative landscape still
-    """
-
-    announced = await storage.get_announced(
-        discord_user_id
-    )
-
-    groups = defaultdict(
-        lambda: {
-            "title": None,
-            "slug": None,
-            "poster": None,
-            "tmdb_id": None,
-            "tvdb_id": None,
-            "episodes": [],
-        }
-    )
-
-    for ep in iter_show_episodes(
-        media_type,
-        items,
-    ):
-        if (
-            ep["watched_dt"] is None
-            or ep["key"] in announced
-        ):
-            continue
-
-        # Prevent duplicate processing inside one response.
-        announced.add(
-            ep["key"]
-        )
-
-        group = groups[
-            (
-                ep["simkl_id"],
-                ep["season_num"],
-            )
-        ]
-
-        group["title"] = ep[
-            "show_title"
-        ]
-
-        group["slug"] = ep[
-            "slug"
-        ]
-
-        group["poster"] = ep[
-            "poster"
-        ]
-
-        group["tmdb_id"] = ep.get(
-            "tmdb_id"
-        )
-
-        group["tvdb_id"] = ep.get(
-            "tvdb_id"
-        )
-
-        group["episodes"].append(
-            ep
-        )
-
-    total_new = 0
-    all_sent = True
-
-    for (
-        simkl_id,
-        season_num,
-    ), group in groups.items():
-
-        title = (
-            group["title"]
-            or "a show"
-        )
-
-        title_url = simkl_title_url(
-            media_type,
-            simkl_id,
-            group["slug"],
-        )
-
-        fallback_poster_url = (
-            simkl_poster_url(
-                group["poster"]
-            )
-        )
-
-        for episode_group in group_consecutive_episodes(
-            group["episodes"]
-        ):
-            first = episode_group[0]
-            last = episode_group[-1]
-
-            episode_label = format_episode_range(
-                season_num,
-                first["episode_number"],
-                last["episode_number"],
-            )
-
-            # -------------------------------------------------------
-            # TMDB image/title lookup
-            #
-            # For ranges we deliberately use the FIRST episode's
-            # still as the representative image.
-            # -------------------------------------------------------
-
-            image_url = None
-            episode_title = None
-
-            try:
-                image_url, episode_title = (
-                    await get_episode_media(
-                        media_type,
-                        first,
-                    )
-                )
-            except Exception:
-                log.warning(
-                    "TMDB episode lookup failed "
-                    "for %s %s.",
-                    title,
-                    episode_label,
-                    exc_info=True,
-                )
-
-            # Fall back to the SIMKL poster if TMDB has no still.
-            if not image_url:
-                image_url = fallback_poster_url
-
-            # -------------------------------------------------------
-            # Description
-            # -------------------------------------------------------
-
-            description = (
-                f"watched **{episode_label}**"
-            )
-
-            # Only individual episodes get an episode title.
-            if (
-                len(episode_group) == 1
-                and episode_title
-            ):
-                description += (
-                    f"\n*{episode_title}*"
-                )
-
-            # -------------------------------------------------------
-            # Build embed
-            # -------------------------------------------------------
-
-            embed = build_activity_embed(
-                media_type,
-                description,
-                max(
-                    ep["watched_dt"]
-                    for ep in episode_group
-                ),
-                display_name,
-                member,
-                image_url,
-                profile_url,
-                title=title,
-                title_url=title_url,
-            )
-
-            if not await send_embed(
-                channel,
-                embed,
-                "episode",
-            ):
-                all_sent = False
-                continue
-
-            # Mark every episode in this range as announced.
-            keys = [
-                ep["key"]
-                for ep in episode_group
-            ]
-
-            await storage.add_announced(
-                discord_user_id,
-                keys,
-            )
-
-            total_new += len(keys)
-
-    return total_new, all_sent
-
-
-# ---------------------------------------------------------------------------
-# Process Movies
-# ---------------------------------------------------------------------------
-
-
-async def process_movie_items(
-    channel,
-    discord_user_id: str,
-    display_name: str,
-    member,
-    media_type: str,
-    items,
-    since_dt: datetime,
-    profile_url: str | None = None,
-):
-    """
-    Post movies watched since the last check.
-
-    Uses a TMDB landscape backdrop when available,
-    falling back to the SIMKL poster otherwise.
-    """
-
-    announced = await storage.get_announced(
-        discord_user_id
-    )
-
-    total_new = 0
-    all_sent = True
-
-    for item in items or []:
-        movie = item.get(
-            "movie"
-        ) or {}
-
-        title = movie.get(
-            "title",
-            "a movie",
-        )
-
-        ids = movie.get(
-            "ids"
-        ) or {}
-
-        simkl_id = ids.get(
-            "simkl"
-        )
-
-        slug = ids.get(
-            "slug"
-        )
-
-        poster = movie.get(
-            "poster"
-        )
-
-        tmdb_id = ids.get(
-            "tmdb"
-        )
-
-        if simkl_id is None:
-            continue
-
-        watched_raw = item.get(
-            "last_watched_at"
-        )
-
-        if not watched_raw:
-            continue
-
-        watched_dt = parse_iso(
-            watched_raw
-        )
-
-        # Only announce movies with a newer watch timestamp.
-        if watched_dt <= since_dt:
-            continue
-
-        key = movie_key(
-            media_type,
-            simkl_id,
-        )
-
-        if key in announced:
-            continue
-
-        announced.add(key)
-
-        title_url = simkl_title_url(
-            media_type,
-            simkl_id,
-            slug,
-        )
-
-        # -----------------------------------------------------------
-        # TMDB movie backdrop
-        # -----------------------------------------------------------
-
-        image_url = None
-
-        if tmdb_id is not None:
-            try:
-                image_url = (
-                    await tmdb.get_movie_backdrop(
-                        tmdb_id
-                    )
-                )
-            except Exception:
-                log.warning(
-                    "TMDB movie backdrop lookup failed "
-                    "for %s (TMDB ID %s).",
-                    title,
-                    tmdb_id,
-                    exc_info=True,
-                )
-
-        # Fallback to SIMKL poster.
-        if not image_url:
-            image_url = simkl_poster_url(
-                poster
-            )
-
-        # -----------------------------------------------------------
-        # Movie embed
-        # -----------------------------------------------------------
-
-        embed = build_activity_embed(
-            media_type,
-            "watched a movie",
-            watched_dt,
-            display_name,
-            member,
-            image_url,
-            profile_url,
-            title=title,
-            title_url=title_url,
-        )
-
-        if not await send_embed(
-            channel,
-            embed,
-            "movie",
-        ):
-            all_sent = False
-            continue
-
-        await storage.add_announced(
-            discord_user_id,
-            [key],
-        )
-
-        total_new += 1
-
-    return total_new, all_sent
-
-
-# ---------------------------------------------------------------------------
-# Poll one user
-# ---------------------------------------------------------------------------
-
-
-async def resolve_display(
-    discord_user_id: str,
-):
-    """Return (user, display name) for embeds."""
-
-    try:
-        member = await bot.fetch_user(
-            int(discord_user_id)
-        )
-
-        return (
-            member,
-            member.display_name,
-        )
-
-    except Exception:
-        return None, "Someone"
-
-
-async def poll_single_user(
-    channel,
-    discord_user_id: str,
-    user_data: dict,
-):
-    token = await get_valid_token(
-        discord_user_id,
-        user_data,
-    )
-
-    member, display_name = await resolve_display(
-        discord_user_id
-    )
-
-    # One /sync/activities request per user per cycle.
-    try:
-        activities, token = (
-            await call_with_refresh(
-                discord_user_id,
-                user_data,
-                token,
-                simkl.get_activities,
-            )
-        )
-
-    except SimklAuthError:
-        log.warning(
-            "SIMKL authentication failed for user %s "
-            "after token refresh. They may need to "
-            "/simkl-link again.",
-            discord_user_id,
-        )
-        return
-
-    except Exception:
-        log.exception(
-            "Failed to get SIMKL activities "
-            "for user %s.",
-            discord_user_id,
-        )
-        return
-
-    # Users who linked before history seeding existed:
-    # record their history before posting anything.
-    if not user_data.get(
-        "history_seeded"
-    ):
-        try:
-            token = await seed_history(
-                discord_user_id,
-                user_data,
-                token,
-            )
-
-        except Exception:
-            log.warning(
-                "Couldn't record SIMKL history "
-                "for user %s; will retry next cycle.",
-                discord_user_id,
-                exc_info=True,
-            )
-            return
-
-    # Look up SIMKL profile ID once for older linked accounts.
-    if (
-        not user_data.get(
-            "simkl_account_id"
-        )
-        and discord_user_id
-        not in profile_lookup_attempted
-    ):
-        profile_lookup_attempted.add(
-            discord_user_id
-        )
-
-        try:
-            settings, token = (
-                await call_with_refresh(
-                    discord_user_id,
-                    user_data,
-                    token,
-                    simkl.get_user_settings,
-                )
-            )
-
-            account_id = (
-                account_id_from_settings(
-                    settings
-                )
-            )
-
-            if account_id:
-                await storage.set_account_id(
-                    discord_user_id,
-                    account_id,
-                )
-
-                user_data[
-                    "simkl_account_id"
-                ] = account_id
-
-        except Exception:
-            log.warning(
-                "Couldn't look up SIMKL profile "
-                "for user %s.",
-                discord_user_id,
-                exc_info=True,
-            )
-
-    profile_url = simkl_profile_url(
-        user_data.get(
-            "simkl_account_id"
-        )
-    )
-
-    last_checked = (
-        user_data.get(
-            "last_checked"
-        )
-        or {}
-    )
-
-    try:
-        for media_type in MEDIA_TYPES:
-            since = last_checked.get(
-                media_type,
-                EPOCH_ISO,
-            )
-
-            since_dt = parse_iso(
-                since
-            )
-
-            activity_data = (
-                activities.get(
-                    ACTIVITY_KEYS[
-                        media_type
-                    ]
-                )
-                or {}
-            )
-
-            activity_timestamp = (
-                activity_data.get("all")
-            )
-
-            if not activity_timestamp:
-                continue
-
-            activity_dt = parse_iso(
-                activity_timestamp
-            )
-
-            # Nothing changed.
-            if activity_dt <= since_dt:
-                continue
-
-            log.info(
-                "SIMKL %s activity changed "
-                "for user %s: %s -> %s",
-                media_type,
-                discord_user_id,
-                since,
-                activity_timestamp,
-            )
-
-            # Incremental sync only.
-            try:
-                items, token = (
-                    await call_with_refresh(
-                        discord_user_id,
-                        user_data,
-                        token,
-                        simkl.get_all_items,
-                        media_type,
-                        date_from=since,
-                    )
-                )
-
-            except Exception:
-                log.exception(
-                    "Failed to fetch %s "
-                    "for user %s.",
-                    media_type,
-                    discord_user_id,
-                )
-
-                # Do not advance checkpoint.
-                continue
-
-            if media_type == "movies":
-                (
-                    new_count,
-                    all_sent,
-                ) = await process_movie_items(
-                    channel,
-                    discord_user_id,
-                    display_name,
-                    member,
-                    media_type,
-                    items,
-                    since_dt,
-                    profile_url,
-                )
-
-            else:
-                (
-                    new_count,
-                    all_sent,
-                ) = await process_show_items(
-                    channel,
-                    discord_user_id,
-                    display_name,
-                    member,
-                    media_type,
-                    items,
-                    profile_url,
-                )
-
-            # The checkpoint comes from /sync/activities,
-            # not watched_at, because bulk-marked episodes can
-            # have old watched_at values.
-            #
-            # If a post failed, retain the old checkpoint so
-            # it will be retried next cycle.
-            if all_sent:
-                await storage.update_last_checked(
-                    discord_user_id,
-                    media_type,
-                    to_iso(activity_dt),
-                )
-
-            else:
-                log.warning(
-                    "Some %s posts for user %s failed; "
-                    "will retry next cycle.",
-                    media_type,
-                    discord_user_id,
-                )
-
-            await storage.flush()
-
-            if new_count:
-                log.info(
-                    "Posted %d new %s watch event(s) "
-                    "for user %s.",
-                    new_count,
-                    media_type,
-                    discord_user_id,
-                )
-
-    finally:
-        await storage.flush()
-
-
-# ---------------------------------------------------------------------------
-# Poll all users
-# ---------------------------------------------------------------------------
-
-
-async def _poll_all_users():
-    """
-    Run one polling cycle.
-
-    Assumes poll_lock is already held.
-    """
-
-    data = await storage.get_all()
-
-    channel_id = data.get(
-        "channel_id"
-    )
-
-    if not channel_id:
-        return
-
-    channel = bot.get_channel(
-        channel_id
-    )
-
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(
-                channel_id
-            )
-
-        except Exception:
-            log.warning(
-                "Configured channel %s is not accessible.",
-                channel_id,
-            )
-            return
-
-    for (
-        discord_user_id,
-        user_data,
-    ) in list(
-        data.get(
-            "users",
-            {},
-        ).items()
-    ):
-        try:
-            await poll_single_user(
-                channel,
-                discord_user_id,
-                user_data,
-            )
-
-        except SimklAuthError:
-            log.warning(
-                "SIMKL authentication failed "
-                "for user %s. They may need "
-                "to /simkl-link again.",
-                discord_user_id,
-            )
-
-        except Exception:
-            log.exception(
-                "Error polling user %s.",
-                discord_user_id,
-            )
-
-
-async def poll_all_users():
-    """Run one polling cycle with the global polling lock."""
-
-    async with poll_lock:
-        await _poll_all_users()
-
-
-# ---------------------------------------------------------------------------
-# Background polling
-# ---------------------------------------------------------------------------
-
-poll_task_started = False
-
-
+poll_task_started=False
 @bot.event
 async def on_ready():
     global poll_task_started
-
-    log.info(
-        "Logged in as %s.",
-        bot.user,
-    )
-
-    log.info(
-        "SIMKL polling interval: every %d minute(s).",
-        POLL_INTERVAL_MINUTES,
-    )
-
+    log.info("Logged in as %s.",bot.user)
+    for g in bot.guilds:
+        await storage.ensure_guild(g.id)
     if not poll_task_started:
-        poll_task_started = True
-
-        bot.loop.create_task(
-            polling_loop()
-        )
-
+        poll_task_started=True; bot.loop.create_task(polling_loop())
 
 async def polling_loop():
     await bot.wait_until_ready()
-
     while not bot.is_closed():
-        try:
-            await poll_all_users()
+        try: await poll_all()
+        except Exception: log.exception("Polling cycle failed.")
+        await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
 
-        except Exception:
-            log.exception(
-                "Error during polling cycle."
-            )
-
-        await asyncio.sleep(
-            POLL_INTERVAL_MINUTES * 60
-        )
-
-
-# ---------------------------------------------------------------------------
-# Start
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    bot.run(
-        DISCORD_BOT_TOKEN
-    )
+if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN)
