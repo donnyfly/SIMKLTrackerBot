@@ -1,14 +1,22 @@
-# SIMKL Watch Activity Tracker for Discord
+# SIMKL Activity Tracker for Discord
 
 A self-hosted Discord bot that monitors your SIMKL watch activity and posts new watches to a Discord channel.
 
 The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh, clickable SIMKL titles, configurable embeds, consecutive episode grouping, TMDB artwork, multi-server support, and persistent local storage.
 
-<img width="400" height="" alt="simkldiscordbotsample3" src="https://github.com/user-attachments/assets/1bfa8fcf-a2cc-42e4-b6ea-8bcfe4590fb8" />
+<img width="400" height="" alt="simkldiscordbotsample4" src="https://github.com/user-attachments/assets/7bb75ae5-200e-47e6-822a-f5110152cba2" />
+<img width="212" height="" alt="simkldiscordbotsample6" src="https://github.com/user-attachments/assets/1189412b-92f7-4c01-9cac-0a428a27a808" />
+<img width="600" height="" alt="simkldiscordbotsample5" src="https://github.com/user-attachments/assets/fd39a2af-26b9-420d-89e5-dea00a04ac0f" />
+
+
+
+
+*Embed styles are selectable via Discord slash commands*
+
 
 ## Features
 
-* 🎬 Tracks TV shows, anime, and movies
+* 🎬 Tracks TV shows, anime, and movies (watching, planned, dropped, started watching, completed)
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
 * ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
