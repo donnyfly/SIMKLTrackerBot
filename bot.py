@@ -58,7 +58,12 @@ MEDIA_TYPES = ("shows", "anime", "movies")
 # Key used for each media type in the /sync/activities response.
 ACTIVITY_KEYS = {"shows": "tv_shows", "anime": "anime", "movies": "movies"}
 
-EMBED_COLOR = 0x1ABC9C
+# Embed colour and footer label for each media type.
+MEDIA_STYLES = {
+    "shows": (0x3498DB, "📺 TV"),
+    "anime": (0xE91E63, "🌸 Anime"),
+    "movies": (0xF1C40F, "🎬 Movie"),
+}
 
 # Full-history requests (once per user) can be large, so allow more time.
 HISTORY_FETCH_TIMEOUT_SECONDS = 120
@@ -72,6 +77,10 @@ last_checknow_at = 0.0
 
 # Discord user IDs with a /simkl-link flow currently in progress.
 linking_users: set[str] = set()
+
+# Users whose SIMKL account ID (for the profile link) was already looked up
+# since the bot started, so it's fetched at most once per user per run.
+profile_lookup_attempted: set[str] = set()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -166,13 +175,29 @@ def is_admin(interaction: discord.Interaction) -> bool:
     return bool(interaction.user.guild_permissions.manage_guild)
 
 
-def simkl_poster_url(poster_path: str | None) -> str | None:
+def simkl_poster_url(poster_path: str | None, size: str = "_m") -> str | None:
+    """
+    Build a poster URL. "_m" is SIMKL's large poster (340px wide),
+    "_c" the smaller one (170px wide) the bot used before.
+    """
     if not poster_path:
         return None
     return (
         "https://wsrv.nl/?url=https://simkl.in/posters/"
-        f"{poster_path}_c.webp&q=90"
+        f"{poster_path}{size}.webp&q=90"
     )
+
+
+def simkl_profile_url(simkl_account_id) -> str | None:
+    if not simkl_account_id:
+        return None
+    return f"https://simkl.com/{simkl_account_id}/"
+
+
+def account_id_from_settings(settings) -> int | str | None:
+    if not isinstance(settings, dict):
+        return None
+    return (settings.get("account") or {}).get("id")
 
 
 def simkl_title_url(media_type: str, simkl_id, slug: str | None = None) -> str:
@@ -281,24 +306,31 @@ def group_consecutive_episodes(episodes):
 
 
 def build_activity_embed(
+    media_type: str,
     description: str,
     timestamp: datetime,
     display_name: str,
     member,
     poster_url: str | None,
+    profile_url: str | None,
 ) -> discord.Embed:
+    color, label = MEDIA_STYLES[media_type]
+
     embed = discord.Embed(
         description=description,
-        color=EMBED_COLOR,
+        color=color,
         timestamp=timestamp,
     )
+    # The author line links to the user's SIMKL profile when known.
     embed.set_author(
         name=f"{display_name}'s Activity",
+        url=profile_url,
         icon_url=member.display_avatar.url if member else None,
     )
+    # Large poster underneath the text.
     if poster_url:
-        embed.set_thumbnail(url=poster_url)
-    embed.set_footer(text="SIMKL")
+        embed.set_image(url=poster_url)
+    embed.set_footer(text=f"{label} · SIMKL")
     return embed
 
 
@@ -548,8 +580,10 @@ async def run_link_flow(interaction: discord.Interaction, discord_user_id: str):
     refresh_token = tokens.get("refresh_token")
     token_expires_at = calculate_token_expiry(tokens.get("expires_in"))
 
+    simkl_account_id = None
     try:
         settings = await simkl.get_user_settings(access_token)
+        simkl_account_id = account_id_from_settings(settings)
         simkl_username = (
             settings.get("user", {}).get("name")
             or settings.get("account", {}).get("id")
@@ -567,6 +601,7 @@ async def run_link_flow(interaction: discord.Interaction, discord_user_id: str):
         simkl_username,
         link_time,
         token_expires_at,
+        simkl_account_id,
     )
 
     await dm_or_followup(
@@ -755,6 +790,7 @@ async def process_show_items(
     member,
     media_type: str,
     items,
+    profile_url: str | None = None,
 ):
     """
     Post every watched episode that hasn't been announced yet.
@@ -812,11 +848,13 @@ async def process_show_items(
                 description += f"\n*{first['episode_title']}*"
 
             embed = build_activity_embed(
+                media_type,
                 description,
                 max(ep["watched_dt"] for ep in episode_group),
                 display_name,
                 member,
                 poster_url,
+                profile_url,
             )
 
             if not await send_embed(channel, embed, "episode"):
@@ -844,6 +882,7 @@ async def process_movie_items(
     media_type: str,
     items,
     since_dt: datetime,
+    profile_url: str | None = None,
 ):
     """
     Post movies watched since the last check that haven't been announced.
@@ -884,11 +923,13 @@ async def process_movie_items(
         title_url = simkl_title_url(media_type, simkl_id, slug)
 
         embed = build_activity_embed(
+            media_type,
             f"watched the movie **[{title}]({title_url})**",
             watched_dt,
             display_name,
             member,
             simkl_poster_url(poster),
+            profile_url,
         )
 
         if not await send_embed(channel, embed, "movie"):
@@ -950,6 +991,29 @@ async def poll_single_user(channel, discord_user_id: str, user_data: dict):
             )
             return
 
+    # Users linked before profile links existed: look up their SIMKL
+    # account ID once (1 request). If it fails, try again after a restart.
+    if (
+        not user_data.get("simkl_account_id")
+        and discord_user_id not in profile_lookup_attempted
+    ):
+        profile_lookup_attempted.add(discord_user_id)
+        try:
+            settings, token = await call_with_refresh(
+                discord_user_id, user_data, token, simkl.get_user_settings
+            )
+            account_id = account_id_from_settings(settings)
+            if account_id:
+                await storage.set_account_id(discord_user_id, account_id)
+                user_data["simkl_account_id"] = account_id
+        except Exception:
+            log.warning(
+                "Couldn't look up SIMKL profile for user %s.",
+                discord_user_id,
+                exc_info=True,
+            )
+
+    profile_url = simkl_profile_url(user_data.get("simkl_account_id"))
     last_checked = user_data.get("last_checked", {})
 
     try:
@@ -1002,6 +1066,7 @@ async def poll_single_user(channel, discord_user_id: str, user_data: dict):
                     media_type,
                     items,
                     since_dt,
+                    profile_url,
                 )
             else:
                 new_count, all_sent = await process_show_items(
@@ -1011,6 +1076,7 @@ async def poll_single_user(channel, discord_user_id: str, user_data: dict):
                     member,
                     media_type,
                     items,
+                    profile_url,
                 )
 
             # The checkpoint comes from /sync/activities, not watched_at,

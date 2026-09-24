@@ -86,6 +86,7 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("refresh_token", None)
     user.setdefault("token_expires_at", None)
     user.setdefault("simkl_username", "unknown")
+    user.setdefault("simkl_account_id", None)
 
     # Users linked before this version have not had their existing
     # history recorded yet; the bot does that on their next poll.
@@ -190,6 +191,7 @@ class Storage:
         simkl_username: str,
         start_time_iso: str,
         token_expires_at: str | None = None,
+        simkl_account_id: int | str | None = None,
     ) -> None:
         async with _lock:
             self._data["users"][discord_user_id] = {
@@ -197,6 +199,7 @@ class Storage:
                 "refresh_token": refresh_token,
                 "token_expires_at": token_expires_at,
                 "simkl_username": simkl_username,
+                "simkl_account_id": simkl_account_id,
                 "history_seeded": False,
                 "last_checked": {
                     "shows": start_time_iso,
@@ -223,6 +226,20 @@ class Storage:
             if refresh_token:
                 user["refresh_token"] = refresh_token
             user["token_expires_at"] = token_expires_at
+            self._dirty = True
+        await self.flush()
+
+    async def set_account_id(
+        self,
+        discord_user_id: str,
+        simkl_account_id: int | str,
+    ) -> None:
+        """Save the user's SIMKL account ID (used for their profile link)."""
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            user["simkl_account_id"] = simkl_account_id
             self._dirty = True
         await self.flush()
 
