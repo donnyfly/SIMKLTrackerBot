@@ -392,6 +392,11 @@ class TmdbClient:
             if value not in candidates:
                 candidates.append(value)
 
+        try:
+            episode_number = int(episode_number)
+        except (TypeError, ValueError):
+            return None
+
         normalized_title = (
             str(episode_title).strip().casefold()
             if episode_title
@@ -528,12 +533,14 @@ class TmdbClient:
                         ):
                             continue
 
-                    return {
+                    result = {
                         "series_id": current_series_id,
                         "season_number": season_number,
                         "episode_number": episode_number,
                         "episode": episode,
                     }
+                    self._anime_episode_cache[cache_key] = result
+                    return result
 
         self._anime_episode_cache[cache_key] = None
         return None
