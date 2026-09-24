@@ -8,6 +8,7 @@ SIMKL API client for the Discord watch activity bot.
 - Returns token expiry information for proactive refresh
 """
 
+import asyncio
 import json
 import logging
 
@@ -108,22 +109,60 @@ class SimklClient:
         params: dict | None = None,
         timeout: float | None = None,
     ):
-        """Authenticated GET. Raises SimklAuthError on 401."""
+        """Authenticated GET with retry/backoff for transient failures."""
         session = await self._get_session()
         kwargs = {}
         if timeout is not None:
             kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
 
-        async with session.get(
-            f"{API_BASE}{path}",
-            params=params if params is not None else self._params(),
-            headers=self._headers(token),
-            **kwargs,
-        ) as resp:
-            if resp.status == 401:
-                raise SimklAuthError("Token invalid or revoked")
-            resp.raise_for_status()
-            return await resp.json()
+        request_params = params if params is not None else self._params()
+
+        for attempt in range(4):
+            try:
+                async with session.get(
+                    f"{API_BASE}{path}",
+                    params=request_params,
+                    headers=self._headers(token),
+                    **kwargs,
+                ) as resp:
+                    if resp.status == 401:
+                        raise SimklAuthError("Token invalid or revoked")
+
+                    if resp.status == 429 or 500 <= resp.status < 600:
+                        if attempt < 3:
+                            retry_after = resp.headers.get("Retry-After")
+                            try:
+                                delay = float(retry_after)
+                            except (TypeError, ValueError):
+                                delay = 2 ** attempt
+                            delay = min(max(delay, 1.0), 30.0)
+                            log.warning(
+                                "SIMKL returned HTTP %s for %s; retrying in %.1fs.",
+                                resp.status,
+                                path,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+
+                    resp.raise_for_status()
+                    return await resp.json()
+
+            except SimklAuthError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if attempt >= 3:
+                    raise
+                delay = min(2 ** attempt, 30)
+                log.warning(
+                    "SIMKL request failed for %s; retrying in %.1fs.",
+                    path,
+                    delay,
+                    exc_info=True,
+                )
+                await asyncio.sleep(delay)
+
+        raise RuntimeError(f"SIMKL request failed after retries: {path}")
 
     # -----------------------------------------------------------------------
     # AUTH V2 Device / PIN flow
