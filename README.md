@@ -20,6 +20,7 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
 * ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
+* ⚡ Processes different SIMKL users concurrently with a configurable worker limit
 * 📊 Uses incremental syncing and `/sync/activities` to minimize unnecessary API requests
 * 📺 Groups consecutive episodes into a single Discord message
 * 🖼️ Uses TMDB landscape artwork for episodes, movies, and planned activity, with SIMKL poster fallback
@@ -116,6 +117,7 @@ TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
 GUILD_ID=
 POLL_INTERVAL_MINUTES=60
+POLL_CONCURRENCY=5
 ```
 
 ## `DISCORD_BOT_TOKEN`
@@ -811,6 +813,12 @@ The bot is designed to minimize unnecessary SIMKL API requests.
 During a normal polling cycle, it first checks SIMKL's `/sync/activities` endpoint. If SIMKL reports that a media type has changed since the bot's last check, the bot then requests the relevant updated watch data using an incremental `date_from` value.
 
 The bot does **not** repeatedly download the user's entire watch history during every polling cycle.
+
+During a polling cycle, different SIMKL users are processed concurrently up to `POLL_CONCURRENCY`. Servers linked to the same user are kept in the same worker so shared SIMKL request caching remains effective and each server's tracking state stays isolated.
+
+The scheduler also accounts for the time spent processing a polling cycle. It targets the configured interval between cycle starts instead of adding the full interval after every completed cycle. If a cycle takes longer than the configured interval, the next cycle starts as soon as the current one finishes rather than allowing delay to grow indefinitely.
+
+The current JSON storage backend is intentionally designed for a single bot process. It should not be shared by multiple bot processes or instances. A future distributed deployment should move persistent state to a shared database before running multiple workers against the same data.
 
 Because SIMKL API requests are subject to account/app limits, shorter polling intervals will result in more API requests. A longer interval is recommended if you do not need near-real-time activity updates.
 
