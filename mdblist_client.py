@@ -102,7 +102,7 @@ class MdbListClient:
         except (TypeError, ValueError):
             return None
 
-        if media_type not in {"movie", "tv"}:
+        if media_type not in {"movie", "show"}:
             return None
 
         key = (media_type, tmdb_id)
