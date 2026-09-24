@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - test
+    tags:
+      - "v*"
 
 env:
   REGISTRY: ghcr.io
@@ -38,5 +40,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/donnyfly/simkltrackerbot:${{ github.ref_name == 'main' && 'latest' || 'test' }}
+            ${{ github.ref_type == 'tag' && format('ghcr.io/donnyfly/simkltrackerbot:{0}', github.ref_name) || format('ghcr.io/donnyfly/simkltrackerbot:{0}', github.ref_name == 'main' && 'latest' || 'test') }}
             ghcr.io/donnyfly/simkltrackerbot:${{ github.sha }}
