@@ -46,7 +46,7 @@ class MdbListClient:
             await self._session.close()
         self._session = None
 
-    async def _fetch_rating(self, media_type: str, tmdb_id: int) -> float | None:
+    async def _fetch_ratings(self, media_type: str, tmdb_id: int) -> dict[str, float]:
         path = f"{API_BASE}/tmdb/{media_type}/{tmdb_id}"
         session = await self._get_session()
 
@@ -58,16 +58,16 @@ class MdbListClient:
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        ratings = {}
                         for item in data.get("ratings") or []:
-                            if str(item.get("source", "")).lower() != "imdb":
+                            source = str(item.get("source", "")).lower()
+                            if source not in {"imdb", "myanimelist"}:
                                 continue
-                            value = item.get("value")
                             try:
-                                return float(value)
+                                ratings[source] = float(item.get("value"))
                             except (TypeError, ValueError):
-                                return None
-
-                        return None
+                                continue
+                        return ratings
 
                     if resp.status != 429 or attempt >= 3:
                         log.warning(
@@ -94,16 +94,16 @@ class MdbListClient:
                 log.warning("MDBList request failed: %s", path, exc_info=True)
                 return None
 
-        return None
+        return {}
 
-    async def get_imdb_rating(self, media_type: str, tmdb_id) -> float | None:
+    async def get_ratings(self, media_type: str, tmdb_id) -> dict[str, float]:
         try:
             tmdb_id = int(tmdb_id)
         except (TypeError, ValueError):
             return None
 
         if media_type not in {"movie", "show"}:
-            return None
+            return {}
 
         key = (media_type, tmdb_id)
         now = time.monotonic()
@@ -117,7 +117,7 @@ class MdbListClient:
 
         task = self._inflight.get(key)
         if task is None:
-            task = asyncio.create_task(self._fetch_rating(media_type, tmdb_id))
+            task = asyncio.create_task(self._fetch_ratings(media_type, tmdb_id))
             self._inflight[key] = task
 
         try:
@@ -126,6 +126,10 @@ class MdbListClient:
             if self._inflight.get(key) is task:
                 self._inflight.pop(key, None)
 
-        ttl = CACHE_TTL_SECONDS if value is not None else NEGATIVE_CACHE_TTL_SECONDS
+        ttl = CACHE_TTL_SECONDS if value else NEGATIVE_CACHE_TTL_SECONDS
         self._cache[key] = (time.monotonic() + ttl, value)
         return value
+
+    async def get_imdb_rating(self, media_type: str, tmdb_id) -> float | None:
+        ratings = await self.get_ratings(media_type, tmdb_id)
+        return ratings.get("imdb")
