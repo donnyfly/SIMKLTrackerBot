@@ -644,7 +644,7 @@ def build_activity_embed(
     artwork = prefs.get("artwork", "auto")
     embed = discord.Embed(title=title, url=title_url, description=description, color=color, timestamp=timestamp)
     embed.set_author(name=f"{display_name}'s Activity", url=profile_url, icon_url=member.display_avatar.url if member else None)
-    selected_image = poster_url if artwork == "poster" else image_url
+    selected_image = poster_url if (artwork == "poster" or style == "poster") else image_url
     if not selected_image:
         selected_image = poster_url or image_url
     if selected_image:
@@ -1499,7 +1499,7 @@ async def process_status_items(channel, discord_user_id: str, display_name: str,
         media = (item.get("movie") if media_type == "movies" else item.get("show")) or {}; ids = media.get("ids") or {}; simkl_id = ids.get("simkl"); status = item.get("status")
         if simkl_id is None or status not in WATCHLIST_STATUSES: continue
         state_key = f"{media_type}:{simkl_id}"; previous = statuses.get(state_key); pending[state_key] = status
-        if baseline or previous is None or previous == status: continue
+        if baseline or previous == status: continue
         title = media.get("title") or "Untitled"; title_url = simkl_title_url(media_type, simkl_id, ids.get("slug")); poster_url = simkl_poster_url(media.get("poster")); image_url = None
         try:
             if ids.get("tmdb") is not None:
