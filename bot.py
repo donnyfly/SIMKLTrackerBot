@@ -7,9 +7,10 @@ from dotenv import load_dotenv
 from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from tmdb_client import TmdbClient
+from mdblist_client import MdbListClient
 
 load_dotenv()
-DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN"); SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID"); TMDB_API_KEY=os.getenv("TMDB_API_KEY"); GUILD_ID=os.getenv("GUILD_ID")
+DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN"); SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID"); TMDB_API_KEY=os.getenv("TMDB_API_KEY"); MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY"); GUILD_ID=os.getenv("GUILD_ID")
 try: POLL_INTERVAL_MINUTES=max(int(os.getenv("POLL_INTERVAL_MINUTES","60")),1)
 except ValueError: POLL_INTERVAL_MINUTES=60
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID: raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
@@ -22,7 +23,7 @@ MEDIA_STYLES={"shows":(0x3498DB,"📺 TV"),"anime":(0xE91E63,"🌸 Anime"),"movi
 HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
 poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
 logging.basicConfig(level=logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s"); log=logging.getLogger("simkl-bot")
-simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY)
+simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY); mdblist=MdbListClient(MDBLIST_API_KEY) if MDBLIST_API_KEY else None
 
 class SimklBot(discord.Client):
     def __init__(self):
@@ -33,7 +34,7 @@ class SimklBot(discord.Client):
         else:
             await self.tree.sync(); log.info("Slash commands synced globally.")
     async def close(self):
-        for client in (simkl,tmdb):
+        for client in (simkl,tmdb,mdblist):
             try: await client.close()
             except Exception: pass
         await super().close()
@@ -109,6 +110,15 @@ async def episode_media(t,e):
     return still,e.get("episode_title") or (r.get("episode") or {}).get("name")
 
 async def prefs(g,u): return await storage.get_embed_preferences(g,u)
+async def get_imdb_rating(media_type, tmdb_id):
+    if mdblist is None or tmdb_id is None:
+        return None
+    try:
+        return await mdblist.get_imdb_rating(media_type, tmdb_id)
+    except Exception:
+        log.warning("MDBList rating lookup failed for %s %s.", media_type, tmdb_id, exc_info=True)
+        return None
+
 def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,preferences=None):
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short"}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
@@ -188,8 +198,10 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
-            desc=f"{verb} **{label}**"
-            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
+            rating = await get_imdb_rating("tv", grp[0].get("tmdb_id")) if len(grp) == 1 else None
+            rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
+            desc=f"{verb} **{label}**{rating_text}"
+            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**{rating_text}"
             if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
@@ -209,7 +221,9 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         if ids.get("tmdb") is not None:
             try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
             except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
-        verb="rewatched" if rw else "watched a movie"; desc=verb if p["activity_text"]!="detailed" else f"{verb} **{title}**"
+        rating = await get_imdb_rating("movie", ids.get("tmdb"))
+        rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
+        verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
         e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,"movie"): ok=False; continue
         await storage.add_announced(g,uid,[k]); pending[k]=wr; count+=1
@@ -229,7 +243,9 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
             except Exception:
                 log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
-        desc=STATUS_TEXT[status] if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**"
+        rating = await get_imdb_rating("movie" if t=="movies" else "tv", ids.get("tmdb"))
+        rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
+        desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,status): ok=False; continue
         count+=1
