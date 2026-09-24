@@ -1,8 +1,8 @@
 """
-Small MDBList API client used for IMDb ratings.
+Small MDBList API client used for movie/show IMDb and MyAnimeList ratings.
 
-MDBList returns multiple ratings for a TMDB title. We only expose the
-IMDb rating here so the Discord embeds stay compact.
+MDBList returns multiple ratings for a TMDB title. We expose the IMDb and
+MyAnimeList ratings needed by the Discord embeds.
 
 The cache is process-local because ratings are metadata rather than bot
 state. A shared cache also prevents duplicate requests when the same
