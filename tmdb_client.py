@@ -33,6 +33,11 @@ class TmdbClient:
             str | None,
         ] = {}
 
+        self._tv_backdrop_cache: dict[
+            int,
+            str | None,
+        ] = {}
+
         # Cache TVDB -> TMDB series lookups.
         self._tvdb_series_cache: dict[
             int,
