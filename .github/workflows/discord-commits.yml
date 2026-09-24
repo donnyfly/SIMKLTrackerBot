@@ -24,17 +24,19 @@ jobs:
           actor = event["sender"]["login"]
           avatar_url = event["sender"]["avatar_url"]
           repo = event["repository"]["name"]
+          repo_url = event["repository"]["html_url"]
+          compare_url = event.get("compare")
           commits = event.get("commits", [])
 
           commit_lines = []
 
           for commit in commits:
               sha = commit["id"][:7]
-              url = commit["url"]
+              url = f"{repo_url}/commit/{commit['id']}"
               message = commit["message"].split("\n")[0]
 
               commit_lines.append(
-                  f"[{sha}]({url}) — {message}"
+                  f"[`{sha}`]({url}) — {message}"
               )
 
           count = len(commits)
@@ -46,6 +48,7 @@ jobs:
                   "icon_url": avatar_url
               },
               "title": title,
+              "url": compare_url,
               "description": "\n".join(commit_lines),
               "color": 5814783
           }
