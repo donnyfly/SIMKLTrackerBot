@@ -132,4 +132,6 @@ class MdbListClient:
 
     async def get_imdb_rating(self, media_type: str, tmdb_id) -> float | None:
         ratings = await self.get_ratings(media_type, tmdb_id)
+        if not ratings:
+            return None
         return ratings.get("imdb")
