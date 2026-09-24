@@ -270,6 +270,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
     return count,ok
 
 async def poll_one(ch,g,uid,u,gu):
+    await storage.update_poll_health(g,uid,last_poll_at=now_iso())
     token=await valid_token(uid,u)
     member,name=await resolve_member(g,uid)
     if not member:
@@ -300,6 +301,7 @@ async def poll_one(ch,g,uid,u,gu):
     profile=simkl_profile_url(u.get("simkl_account_id"))
     last=await storage.get_last_checked(g,uid)
     posted=0
+    cycle_errors=[]
     for t in MEDIA_TYPES:
         since=last.get(t,EPOCH_ISO)
         sdt=parse_iso(since)
@@ -317,9 +319,14 @@ async def poll_one(ch,g,uid,u,gu):
                 posted+=wc
             else:
                 log.warning("Some %s posts failed for user %s; checkpoint not advanced.",t,uid)
-        except Exception:
+        except Exception as exc:
+            cycle_errors.append(f"{t}: {type(exc).__name__}")
             log.exception("Failed processing %s activity for user %s.",t,uid)
         await storage.flush()
+    if cycle_errors:
+        await storage.update_poll_health(g,uid,last_error="; ".join(cycle_errors))
+    else:
+        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error=None)
     return posted
 
 async def poll_all(g=None):
@@ -331,8 +338,20 @@ async def poll_all(g=None):
             try: ch=await bot.fetch_channel(int(x["channel_id"]))
             except Exception: continue
         try: posted+=await poll_one(ch,int(x["guild_id"]),x["discord_user_id"],x["user_data"],x["guild_user_data"])
-        except SimklAuthError: log.warning("Auth failed for %s.",x["discord_user_id"])
-        except Exception: log.exception("Polling failed for %s.",x["discord_user_id"])
+        except SimklAuthError:
+            await storage.update_poll_health(
+                x["guild_id"],
+                x["discord_user_id"],
+                last_error="SIMKL authentication failed",
+            )
+            log.warning("Auth failed for %s.",x["discord_user_id"])
+        except Exception as exc:
+            await storage.update_poll_health(
+                x["guild_id"],
+                x["discord_user_id"],
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            log.exception("Polling failed for %s.",x["discord_user_id"])
     return posted
 
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
@@ -406,9 +425,41 @@ async def simkl_setchannel(i,channel:discord.TextChannel=None):
 async def simkl_status(i):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
-    d=await storage.get_all(); sg=(d.get("guilds") or {}).get(str(g),{}); users=sg.get("users") or {}; allu=d.get("users") or {}; ch=sg.get("channel_id"); text=f"<#{ch}>" if ch else "**not set**"
-    linked="\n".join(f"• <@{uid}> — SIMKL: **{(allu.get(uid) or {}).get('simkl_username','unknown')}**" for uid in users) if users else "No linked accounts."
-    await i.response.send_message(f"**Posting channel:** {text}\n**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n\n**Linked accounts in this server:**\n{linked}",ephemeral=True)
+    d=await storage.get_all()
+    sg=(d.get("guilds") or {}).get(str(g),{})
+    users=sg.get("users") or {}
+    allu=d.get("users") or {}
+    ch=sg.get("channel_id")
+    text=f"<#{ch}>" if ch else "**not set**"
+    lines=[]
+    now=datetime.now(timezone.utc)
+    for uid, gu in users.items():
+        u=allu.get(uid) or {}
+        username=u.get("simkl_username","unknown")
+        expires=u.get("token_expires_at")
+        if expires:
+            remaining=parse_iso(expires)-now
+            if remaining.total_seconds() <= 0:
+                token_state="expired"
+            elif remaining <= timedelta(days=1):
+                token_state=f"expires in {max(int(remaining.total_seconds()//3600),0)}h"
+            else:
+                token_state=f"expires in {remaining.days}d"
+        else:
+            token_state="expiry unknown"
+        last_success=gu.get("last_success_at")
+        last_error=gu.get("last_error")
+        health=f"last success {last_success}" if last_success else "no successful poll yet"
+        if last_error:
+            health += f" · error: {last_error}"
+        lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**\n  {health}")
+    linked="\n".join(lines) if lines else "No linked accounts."
+    await i.response.send_message(
+        f"**Posting channel:** {text}\n"
+        f"**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n\n"
+        f"**Linked accounts in this server:**\n{linked}",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="simkl-checknow",description="(Admin) Immediately check this server's SIMKL activity.")
 async def simkl_checknow(i):
