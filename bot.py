@@ -300,7 +300,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
             logo=None
-            if p["artwork"]=="backdrop" and grp[0].get("tmdb_id") is not None:
+            if grp[0].get("tmdb_id") is not None and p["artwork"] in ("auto", "backdrop"):
                 try:
                     logo=await tmdb.get_tv_logo(grp[0]["tmdb_id"])
                 except Exception:
@@ -342,7 +342,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         rating_text = " · " + " · ".join(rating_parts) if rating_parts else ""
         verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
         logo=None
-        if p["artwork"]=="backdrop" and ids.get("tmdb") is not None:
+        if ids.get("tmdb") is not None and p["artwork"] in ("auto", "backdrop"):
             try:
                 logo=await tmdb.get_movie_logo(ids["tmdb"])
             except Exception:
@@ -395,7 +395,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
         logo=None
-        if p["artwork"]=="backdrop" and ids.get("tmdb") is not None:
+        if ids.get("tmdb") is not None and p["artwork"] in ("auto", "backdrop"):
             try:
                 logo=await (tmdb.get_movie_logo(ids["tmdb"]) if t=="movies" else tmdb.get_tv_logo(ids["tmdb"]))
             except Exception:
