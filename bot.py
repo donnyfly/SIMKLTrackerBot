@@ -477,15 +477,6 @@ async def poll_all(g=None):
     async with poll_lock:
         targets=await storage.get_poll_targets(g)
 
-        log.info("DEBUG poll targets: %s", [
-            (
-                x["guild_id"],
-                x["discord_user_id"],
-                x["channel_id"],
-                bool(x["user_data"].get("simkl_token"))
-            )
-            for x in targets
-        ])
 
         if not targets:
             log.info("Polling cycle: no linked users with configured channels.")
