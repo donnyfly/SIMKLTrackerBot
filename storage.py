@@ -392,7 +392,7 @@ class Storage:
             user = self._guild_user(guild_id, discord_user_id)
             return copy.deepcopy(user["activity_state"]) if user else _default_activity_state()
 
-    async def update_activity_state(self, guild_id: str | int, discord_user_id: str, statuses=None, watch_times=None, statuses_seeded=None) -> None:
+    async def update_activity_state(self, guild_id: str | int, discord_user_id: str, statuses=None, watch_times=None, statuses_seeded=None, flush: bool = True) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             user = self._guild_user(guild_id, discord_user_id)
@@ -405,7 +405,8 @@ class Storage:
             if statuses_seeded is not None:
                 user["activity_state"]["statuses_seeded"] = statuses_seeded
             self._dirty = True
-        await self.flush()
+        if flush:
+            await self.flush()
 
     async def get_last_checked(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
@@ -429,6 +430,7 @@ class Storage:
         last_poll_at: str | None = None,
         last_success_at: str | None = None,
         last_error: str | None = None,
+        flush: bool = True,
     ) -> None:
         """Update persistent polling health information for one guild/user."""
         async with _lock:
@@ -443,7 +445,8 @@ class Storage:
             if last_error is not None:
                 user["last_error"] = last_error
             self._dirty = True
-        await self.flush()
+        if flush:
+            await self.flush()
 
     async def add_announced(self, guild_id: str | int, discord_user_id: str, keys: list[str]) -> None:
         if not keys:
