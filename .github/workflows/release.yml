@@ -7,6 +7,10 @@ on:
         description: "Release version (for example, v0.5.1)"
         required: true
         type: string
+      description:
+        description: "Optional release description. Leave blank to use GitHub's generated notes."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -60,4 +64,5 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: SIMKLTrackerBot ${{ inputs.version }}
           target_commitish: main
+          body: ${{ inputs.description }}
           generate_release_notes: true
