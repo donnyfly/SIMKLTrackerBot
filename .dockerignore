@@ -4,6 +4,7 @@ __pycache__/
 .git/
 .env
 data/
+.pytest_cache/
 tests/
 .github/
 README.md
