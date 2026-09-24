@@ -143,6 +143,10 @@ def _normalise_guild_user(user: dict) -> None:
     state.setdefault("watch_times", {})
     state.setdefault("statuses_seeded", False)
 
+    user.setdefault("last_poll_at", defaults["last_poll_at"])
+    user.setdefault("last_success_at", defaults["last_success_at"])
+    user.setdefault("last_error", defaults["last_error"])
+
     announced = user.get("announced", [])
     if isinstance(announced, set):
         user["announced"] = announced
