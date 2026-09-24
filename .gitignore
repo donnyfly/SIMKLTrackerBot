@@ -12,3 +12,8 @@ __pycache__/
 # System
 .DS_Store
 *.log
+
+# Generated IMDb ratings database and refresh files
+data/imdb_ratings.db
+data/*.tsv.gz.tmp
+data/*.db.tmp
