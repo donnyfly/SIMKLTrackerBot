@@ -289,6 +289,13 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
     count=0; ok=True; pending={}
     for (sid,sn,kind),es in groups.items():
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
+        if t=="anime" and es[0].get("tmdb_id") is not None:
+            try:
+                english_title=await tmdb.get_tv_title(es[0]["tmdb_id"])
+                if english_title:
+                    title=english_title
+            except Exception:
+                log.warning("TMDB anime series title lookup failed for %s.", title, exc_info=True)
         for grp in group_consecutive(es):
             try:
                 image,ep_title,episode_imdb_id=await episode_media(t,grp[0])
