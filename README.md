@@ -19,7 +19,7 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🎬 Tracks TV shows, anime, and movies (watching, planned, dropped, started watching, completed)
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
-* ⏱️ Polls SIMKL for new activity at a configurable interval (15 minutes is the recommended production value for this self-hosted setup)
+* ⏱️ Polls SIMKL for new activity at a configurable interval (60 minutes is the recommended default)
 * ⚡ Processes different SIMKL users concurrently with a configurable worker limit
 * 📊 Uses incremental syncing and `/sync/activities` to minimize unnecessary API requests
 * 📺 Groups consecutive episodes into a single Discord message
@@ -116,7 +116,7 @@ SIMKL_CLIENT_ID=your_simkl_client_id_here
 TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
 GUILD_ID=
-POLL_INTERVAL_MINUTES=15
+POLL_INTERVAL_MINUTES=60
 POLL_CONCURRENCY=5
 ```
 
@@ -162,9 +162,9 @@ The default is:
 POLL_INTERVAL_MINUTES=60
 ```
 
-This means the bot checks SIMKL every **15 minutes** in the recommended production setup when using the example configuration.
+This means the bot checks SIMKL every **60 minutes** by default when using the example configuration.
 
-If the variable is omitted, the application keeps its legacy 60-minute fallback. Invalid or non-positive values are rejected at startup instead of silently falling back.
+If the variable is omitted, the application defaults to 60 minutes, matching SIMKL's recommended polling interval. Users may choose a shorter interval for their own setup if their API limits and usage allow it. Invalid or non-positive values are rejected at startup instead of silently falling back.
 
 You can change this value to suit your needs.
 
