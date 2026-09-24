@@ -123,6 +123,16 @@ async def get_imdb_rating(media_type, tmdb_id):
         log.warning("MDBList rating lookup failed for %s %s.", media_type, tmdb_id, exc_info=True)
         return None
 
+async def get_anime_ratings(tmdb_id):
+    if mdblist is None or tmdb_id is None:
+        return None
+    try:
+        ratings = await mdblist.get_ratings("show", tmdb_id)
+        return {"imdb": ratings.get("imdb"), "mal": ratings.get("myanimelist")}
+    except Exception:
+        log.warning("MDBList anime rating lookup failed for %s.", tmdb_id, exc_info=True)
+        return None
+
 def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,preferences=None):
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short"}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
@@ -202,12 +212,14 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
-            rating = await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None
+            anime_ratings = await get_anime_ratings(grp[0].get("tmdb_id")) if t == "anime" and len(grp) == 1 else None
+            rating = anime_ratings.get("imdb") if anime_ratings else (await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None)
             desc=f"{verb} **{label}**"
             if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
             if len(grp)==1:
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
+                if anime_ratings and anime_ratings.get("mal") is not None: desc+=f"\n⭐ MAL {anime_ratings.get('mal'):.2f}/10"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
             await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
