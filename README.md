@@ -918,10 +918,6 @@ An invalid `GUILD_ID` is also rejected at startup.
 
 Temporary polling failures are recorded persistently and retried on the next scheduled poll. The scheduler's existing retry/backoff path remains in place for unexpected cycle-level failures, while individual user/server failures are isolated so one broken target does not stop the rest of the polling cycle.
 
-### Testing
-
-The project includes automated storage-health regression tests and runs them through GitHub Actions on pushes and pull requests.
-
 ---
 
 # 16. Security
@@ -1189,9 +1185,9 @@ The image can therefore be updated without building the application locally.
 SIMKLTrackerBot/
 ├── .github/
 │   └── workflows/
-│       └── docker.yml
-├── data/
-│   └── .gitkeep
+│       ├── discord-commits.yml
+│       ├── release.yml
+│       └── test.yml
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
@@ -1202,10 +1198,12 @@ SIMKLTrackerBot/
 ├── mdblist_client.py
 ├── requirements.txt
 ├── simkl_client.py
-└── storage.py
+├── storage.py
+└── tests/
+    └── test_storage.py
 ```
 
-`data/store.json` is generated locally when the bot runs and should not be committed to GitHub.
+`data/store.json` is generated locally when the bot runs and should not be committed to GitHub. The `data/` directory is created automatically when needed.
 
 ---
 
