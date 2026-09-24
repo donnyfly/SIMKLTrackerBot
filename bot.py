@@ -264,7 +264,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
             await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
-    if pending: await storage.update_activity_state(g,uid,watch_times=pending)
+    if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
 async def process_movies(ch,g,uid,name,member,items,since,profile):
@@ -285,7 +285,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,"movie"): ok=False; continue
         await storage.add_announced(g,uid,[k]); pending[k]=wr; count+=1
-    if pending: await storage.update_activity_state(g,uid,watch_times=pending)
+    if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
 async def process_status(ch,g,uid,name,member,t,items,profile):
@@ -307,11 +307,11 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,status): ok=False; continue
         count+=1
-    if pending and ok: await storage.update_activity_state(g,uid,statuses=pending,statuses_seeded=True)
+    if pending and ok: await storage.update_activity_state(g,uid,statuses=pending,statuses_seeded=True,flush=False)
     return count,ok
 
 async def poll_one(ch,g,uid,u,gu,request_cache=None):
-    await storage.update_poll_health(g,uid,last_poll_at=now_iso())
+    await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
     token=await valid_token(uid,u)
     member,name=await resolve_member(g,uid)
     if not member:
@@ -332,7 +332,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             gu["history_seeded"]=True
         except Exception as exc:
             error=f"history seed: {type(exc).__name__}: {exc}"
-            await storage.update_poll_health(g,uid,last_error=error)
+            await storage.update_poll_health(g,uid,last_error=error,flush=True)
             log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
             return 0
     if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
@@ -374,7 +374,8 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     if cycle_errors:
         await storage.update_poll_health(g,uid,last_error="; ".join(cycle_errors))
     else:
-        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error="")
+        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error="",flush=False)
+    await storage.flush()
     return posted
 
 async def poll_all(g=None):
