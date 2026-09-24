@@ -326,7 +326,7 @@ async def poll_one(ch,g,uid,u,gu):
     if cycle_errors:
         await storage.update_poll_health(g,uid,last_error="; ".join(cycle_errors))
     else:
-        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error=None)
+        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error="")
     return posted
 
 async def poll_all(g=None):
