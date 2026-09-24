@@ -458,7 +458,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             continue
         try:
             items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
-            sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
+            sc,so=await process_status(ch,g,uid,name,member,t,items,profile,notifications)
             wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile,notifications) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile,notifications))
             if so and wo:
                 await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
