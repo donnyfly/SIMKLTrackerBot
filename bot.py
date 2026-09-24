@@ -154,6 +154,7 @@ async def episode_media(t,e):
     return still,e.get("episode_title") or (r.get("episode") or {}).get("name")
 
 async def prefs(g,u): return await storage.get_embed_preferences(g,u)
+async def notification_prefs(u): return await storage.get_notification_preferences(u)
 async def get_imdb_rating(media_type, tmdb_id):
     if mdblist is None or tmdb_id is None:
         return None
@@ -270,8 +271,8 @@ async def resolve_member(g,uid):
         except Exception: return None,"Someone"
     return m,m.display_name
 
-async def process_shows(ch,g,uid,name,member,t,items,profile):
-    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); groups=defaultdict(list)
+async def process_shows(ch,g,uid,name,member,t,items,profile,notifications=None):
+    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); notifications=notifications or await notification_prefs(uid); groups=defaultdict(list)
     for e in iter_show_episodes(t,items):
         if e["watched_dt"] is None: continue
         prev=watches.get(e["key"]); prevdt=parse_iso(prev) if prev else None
@@ -287,6 +288,13 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
+            if not notifications.get(t, True) or (kind == "rewatched" and not notifications.get("rewatches", True)):
+                keys=[x["key"] for x in grp]
+                watch_times={x["key"]:x["watched_raw"] for x in grp}
+                await storage.add_announced(g,uid,keys)
+                await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
+                pending.update(watch_times)
+                continue
             anime_ratings = await get_anime_ratings(grp[0].get("tmdb_id")) if t == "anime" and len(grp) == 1 else None
             rating = anime_ratings.get("imdb") if anime_ratings else (await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None)
             desc=f"{verb} **{label}**"
@@ -308,15 +316,21 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
-async def process_movies(ch,g,uid,name,member,items,since,profile):
-    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True; pending={}
+async def process_movies(ch,g,uid,name,member,items,since,profile,notifications=None):
+    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); notifications=notifications or await notification_prefs(uid); count=0; ok=True; pending={}
     for x in items or []:
         m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
         if sid is None or not wr: continue
         dt=parse_iso(wr); k=movie_key("movies",sid); prev=watches.get(k); prevdt=parse_iso(prev) if prev else None; rw=k in announced and prevdt and dt>prevdt
         if k in announced and not rw: continue
         if k not in announced and dt<=since: continue
-        title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
+        title=m.get("title","a movie")
+        if (rw and not notifications.get("rewatches", True)) or (not rw and not notifications.get("movies", True)):
+            await storage.add_announced(g,uid,[k])
+            await storage.update_activity_state(g,uid,watch_times={k:wr},flush=False)
+            pending[k]=wr
+            continue
+        poster=simkl_poster_url(m.get("poster")); image=None
         if ids.get("tmdb") is not None:
             try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
             except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
@@ -334,7 +348,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
-async def process_status(ch,g,uid,name,member,t,items,profile):
+async def process_status(ch,g,uid,name,member,t,items,profile,notifications):
     state=await storage.get_activity_state(g,uid)
     statuses=state["statuses"]
     baseline=not state["statuses_seeded"]
@@ -351,6 +365,9 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
             continue
         key=f"{t}:{sid}"
         if baseline or statuses.get(key)==status:
+            successful[key]=status
+            continue
+        if not notifications.get("status_changes", True):
             successful[key]=status
             continue
         title=m.get("title") or "Untitled"
@@ -427,6 +444,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         except Exception:
             log.warning("Profile lookup failed for %s.",uid,exc_info=True)
     profile=simkl_profile_url(u.get("simkl_account_id"))
+    notifications=await notification_prefs(uid)
     last=await storage.get_last_checked(g,uid)
     posted=0
     cycle_errors=[]
@@ -441,7 +459,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         try:
             items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
             sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
-            wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
+            wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile,notifications) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile,notifications))
             if so and wo:
                 await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
                 posted+=wc
@@ -571,6 +589,35 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
         p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
     await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
     p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.",ephemeral=True)
+
+NOTIFICATION_CHOICES=[app_commands.Choice(name="On",value="on"),app_commands.Choice(name="Off",value="off")]
+
+@bot.tree.command(name="simkl-notifications",description="Choose which SIMKL activity notifications you receive.")
+@app_commands.choices(movies=NOTIFICATION_CHOICES,tv=NOTIFICATION_CHOICES,anime=NOTIFICATION_CHOICES,rewatches=NOTIFICATION_CHOICES,status_changes=NOTIFICATION_CHOICES)
+async def simkl_notifications(i,movies: app_commands.Choice[str] | None = None,tv: app_commands.Choice[str] | None = None,anime: app_commands.Choice[str] | None = None,rewatches: app_commands.Choice[str] | None = None,status_changes: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    uid=str(i.user.id)
+    choices=(movies,tv,anime,rewatches,status_changes)
+    p=await notification_prefs(uid)
+    if all(x is None for x in choices):
+        await i.response.send_message("Your notification settings:\\n"
+            f"• Movies: **{'On' if p['movies'] else 'Off'}**\\n"
+            f"• TV Shows: **{'On' if p['tv'] else 'Off'}**\\n"
+            f"• Anime: **{'On' if p['anime'] else 'Off'}**\\n"
+            f"• Rewatches: **{'On' if p['rewatches'] else 'Off'}**\\n"
+            f"• Status Changes: **{'On' if p['status_changes'] else 'Off'}**", ephemeral=True)
+        return
+    enabled=lambda choice: choice.value == "on" if choice else None
+    await storage.set_notification_preferences(uid,movies=enabled(movies),tv=enabled(tv),anime=enabled(anime),rewatches=enabled(rewatches),status_changes=enabled(status_changes))
+    p=await notification_prefs(uid)
+    await i.response.send_message("Your notification settings are now:\\n"
+        f"• Movies: **{'On' if p['movies'] else 'Off'}**\\n"
+        f"• TV Shows: **{'On' if p['tv'] else 'Off'}**\\n"
+        f"• Anime: **{'On' if p['anime'] else 'Off'}**\\n"
+        f"• Rewatches: **{'On' if p['rewatches'] else 'Off'}**\\n"
+        f"• Status Changes: **{'On' if p['status_changes'] else 'Off'}**", ephemeral=True)
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
