@@ -234,6 +234,7 @@ class SimklClient:
         media_type: str,
         date_from: str | None = None,
         timeout: float | None = None,
+        allow_rewatch: bool = False,
     ) -> list:
         """
         Get watched-item data for one media type.
@@ -246,7 +247,13 @@ class SimklClient:
         # seasonal anime as separate entries but the bot should display
         # their normal TVDB/American-style season number (S01, S02, etc.).
         extended = "full_anime_seasons" if media_type == "anime" else "full"
-        params = self._params(extended=extended, episode_watched_at="yes")
+        params = self._params(
+            extended=extended,
+            episode_watched_at="yes",
+            include_all_episodes="yes",
+        )
+        if allow_rewatch:
+            params["allow_rewatch"] = "yes"
         if date_from:
             params["date_from"] = date_from
 
