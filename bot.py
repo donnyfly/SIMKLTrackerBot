@@ -491,7 +491,17 @@ async def simkl_status(i):
     text=f"<#{ch}>" if ch else "**not set**"
     lines=[]
     now=datetime.now(timezone.utc)
+    guild=i.guild
     for uid, gu in users.items():
+        # Guild tracking state can remain after a member leaves so that it can
+        # be resumed if they rejoin. Do not report those orphaned records as
+        # linked accounts in the current server status.
+        try:
+            member=guild.get_member(int(uid))
+            if member is None:
+                member=await guild.fetch_member(int(uid))
+        except (discord.NotFound, discord.Forbidden, ValueError):
+            continue
         u=allu.get(uid) or {}
         username=u.get("simkl_username","unknown")
         expires=u.get("token_expires_at")
