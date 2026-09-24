@@ -418,6 +418,29 @@ class Storage:
             user["last_checked"][category] = iso_timestamp
             self._dirty = True
 
+    async def update_poll_health(
+        self,
+        guild_id: str | int,
+        discord_user_id: str,
+        last_poll_at: str | None = None,
+        last_success_at: str | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        """Update persistent polling health information for one guild/user."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user = self._guild_user(guild_id, discord_user_id)
+            if not user:
+                return
+            if last_poll_at is not None:
+                user["last_poll_at"] = last_poll_at
+            if last_success_at is not None:
+                user["last_success_at"] = last_success_at
+            if last_error is not None:
+                user["last_error"] = last_error
+            self._dirty = True
+        await self.flush()
+
     async def add_announced(self, guild_id: str | int, discord_user_id: str, keys: list[str]) -> None:
         if not keys:
             return
