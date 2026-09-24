@@ -101,6 +101,7 @@ def _default_guild_user(start_time_iso: str | None = None) -> dict:
         "last_poll_at": None,
         "last_success_at": None,
         "last_error": None,
+        "consecutive_failures": 0,
     }
 
 
@@ -146,6 +147,10 @@ def _normalise_guild_user(user: dict) -> None:
     user.setdefault("last_poll_at", defaults["last_poll_at"])
     user.setdefault("last_success_at", defaults["last_success_at"])
     user.setdefault("last_error", defaults["last_error"])
+    try:
+        user["consecutive_failures"] = max(int(user.get("consecutive_failures", 0)), 0)
+    except (TypeError, ValueError):
+        user["consecutive_failures"] = 0
 
     announced = user.get("announced", [])
     if isinstance(announced, set):
@@ -430,6 +435,7 @@ class Storage:
         last_poll_at: str | None = None,
         last_success_at: str | None = None,
         last_error: str | None = None,
+        consecutive_failures: int | None = None,
         flush: bool = True,
     ) -> None:
         """Update persistent polling health information for one guild/user."""
@@ -444,6 +450,8 @@ class Storage:
                 user["last_success_at"] = last_success_at
             if last_error is not None:
                 user["last_error"] = last_error
+            if consecutive_failures is not None:
+                user["consecutive_failures"] = max(int(consecutive_failures), 0)
             self._dirty = True
         if flush:
             await self.flush()

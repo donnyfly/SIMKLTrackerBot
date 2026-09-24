@@ -10,13 +10,33 @@ from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 
 load_dotenv()
-DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN"); SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID"); TMDB_API_KEY=os.getenv("TMDB_API_KEY"); MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY"); GUILD_ID=os.getenv("GUILD_ID")
-try: POLL_INTERVAL_MINUTES=max(int(os.getenv("POLL_INTERVAL_MINUTES","60")),1)
-except ValueError: POLL_INTERVAL_MINUTES=60
-try: POLL_CONCURRENCY=max(int(os.getenv("POLL_CONCURRENCY","5")),1)
-except ValueError: POLL_CONCURRENCY=5
-if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID: raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
-if not TMDB_API_KEY: raise SystemExit("Missing TMDB_API_KEY.")
+
+def positive_int_env(name, default, minimum=1):
+    raw=os.getenv(name, str(default)).strip()
+    try:
+        value=int(raw)
+    except ValueError:
+        raise SystemExit(f"Invalid {name}={raw!r}. It must be an integer of at least {minimum}.")
+    if value < minimum:
+        raise SystemExit(f"Invalid {name}={value}. It must be at least {minimum}.")
+    return value
+
+DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN")
+SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID")
+TMDB_API_KEY=os.getenv("TMDB_API_KEY")
+MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY")
+GUILD_ID=os.getenv("GUILD_ID")
+POLL_INTERVAL_MINUTES=positive_int_env("POLL_INTERVAL_MINUTES", 60)
+POLL_CONCURRENCY=positive_int_env("POLL_CONCURRENCY", 5)
+if GUILD_ID:
+    try:
+        int(GUILD_ID)
+    except ValueError:
+        raise SystemExit(f"Invalid GUILD_ID={GUILD_ID!r}. It must be a Discord server ID.")
+if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
+    raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
+if not TMDB_API_KEY:
+    raise SystemExit("Missing TMDB_API_KEY.")
 
 MEDIA_TYPES=("shows","anime","movies"); ACTIVITY_KEYS={"shows":"tv_shows","anime":"anime","movies":"movies"}
 WATCHLIST_STATUSES=("watching","plantowatch","completed","dropped")
@@ -164,8 +184,20 @@ def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,po
         else: e.set_image(url=selected)
     e.set_footer(text=f"{label} · SIMKL"); return e
 async def send_embed(ch,e,what):
-    try: await ch.send(embed=e); return True
-    except Exception: log.exception("Failed to send %s embed.",what); return False
+    try:
+        await ch.send(embed=e)
+        return True
+    except discord.Forbidden:
+        log.error("Discord denied permission while sending %s embed to channel %s.", what, getattr(ch, "id", "unknown"))
+    except discord.NotFound:
+        log.error("Discord channel or destination was not found while sending %s embed.", what)
+    except discord.HTTPException as exc:
+        # discord.py handles normal Discord rate limits. Avoid blind retries
+        # because a failed response may still have created the message.
+        log.error("Discord HTTP error while sending %s embed (status=%s): %s", what, exc.status, exc)
+    except Exception:
+        log.exception("Unexpected failure while sending %s embed.", what)
+    return False
 
 async def refresh_user_token(uid,u):
     rt=u.get("refresh_token")
@@ -264,8 +296,15 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
                 if anime_ratings and anime_ratings.get("mal") is not None: desc+=f"\n⭐ MAL {anime_ratings.get('mal'):.2f}/10"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
-            if not await send_embed(ch,e,"episode"): ok=False; continue
-            await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
+            if not await send_embed(ch,e,"episode"):
+                ok=False
+                continue
+            keys=[x["key"] for x in grp]
+            watch_times={x["key"]:x["watched_raw"] for x in grp}
+            await storage.add_announced(g,uid,keys)
+            await storage.update_activity_state(g,uid,watch_times=watch_times,flush=True)
+            pending.update(watch_times)
+            count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
@@ -285,19 +324,38 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
         e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
-        if not await send_embed(ch,e,"movie"): ok=False; continue
-        await storage.add_announced(g,uid,[k]); pending[k]=wr; count+=1
+        if not await send_embed(ch,e,"movie"):
+            ok=False
+            continue
+        await storage.add_announced(g,uid,[k])
+        await storage.update_activity_state(g,uid,watch_times={k:wr},flush=True)
+        pending[k]=wr
+        count+=1
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     return count,ok
 
 async def process_status(ch,g,uid,name,member,t,items,profile):
-    state=await storage.get_activity_state(g,uid); statuses=state["statuses"]; baseline=not state["statuses_seeded"]; p=await prefs(g,uid); pending={}; count=0; ok=True
+    state=await storage.get_activity_state(g,uid)
+    statuses=state["statuses"]
+    baseline=not state["statuses_seeded"]
+    p=await prefs(g,uid)
+    successful={}
+    count=0
+    ok=True
     for x in items or []:
-        m=(x.get("movie") if t=="movies" else x.get("show")) or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); status=x.get("status")
-        if sid is None or status not in WATCHLIST_STATUSES: continue
-        key=f"{t}:{sid}"; pending[key]=status
-        if baseline or statuses.get(key)==status: continue
-        title=m.get("title") or "Untitled"; poster=simkl_poster_url(m.get("poster")); image=None
+        m=(x.get("movie") if t=="movies" else x.get("show")) or {}
+        ids=m.get("ids") or {}
+        sid=ids.get("simkl")
+        status=x.get("status")
+        if sid is None or status not in WATCHLIST_STATUSES:
+            continue
+        key=f"{t}:{sid}"
+        if baseline or statuses.get(key)==status:
+            successful[key]=status
+            continue
+        title=m.get("title") or "Untitled"
+        poster=simkl_poster_url(m.get("poster"))
+        image=None
         if ids.get("tmdb") is not None:
             try:
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
@@ -307,25 +365,46 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
-        if not await send_embed(ch,e,status): ok=False; continue
+        if not await send_embed(ch,e,status):
+            ok=False
+            continue
         count+=1
-    if pending and ok: await storage.update_activity_state(g,uid,statuses=pending,statuses_seeded=True,flush=False)
+        successful[key]=status
+        await storage.update_activity_state(g,uid,statuses={key:status},statuses_seeded=True,flush=True)
+    if successful and baseline:
+        await storage.update_activity_state(g,uid,statuses=successful,statuses_seeded=True,flush=True)
     return count,ok
 
+async def mark_poll_failure(g,uid,error,previous_failures=0):
+    failures=max(int(previous_failures or 0),0)+1
+    await storage.update_poll_health(g,uid,last_error=error,consecutive_failures=failures,flush=True)
+
 async def poll_one(ch,g,uid,u,gu,request_cache=None):
+    previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
-    token=await valid_token(uid,u)
+    try:
+        token=await valid_token(uid,u)
+    except SimklAuthError as exc:
+        error=f"SIMKL authentication failed: {exc}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.warning("SIMKL authentication failed for %s.",uid)
+        return 0
+    except Exception as exc:
+        error=f"token validation: {type(exc).__name__}: {exc}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.exception("Failed validating SIMKL token for user %s.",uid)
+        return 0
     member,name=await resolve_member(g,uid)
     if not member:
         error=f"Discord member {uid} is no longer in guild {g}"
-        await storage.update_poll_health(g,uid,last_error=error)
+        await mark_poll_failure(g,uid,error,previous_failures)
         log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
         return 0
     try:
         activities,token=await cached_simkl_activities(uid,u,token,request_cache if request_cache is not None else {})
     except Exception as exc:
         error=f"activity fetch: {type(exc).__name__}: {exc}"
-        await storage.update_poll_health(g,uid,last_error=error)
+        await mark_poll_failure(g,uid,error,previous_failures)
         log.exception("Failed to get SIMKL activity timestamps for user %s.",uid)
         return 0
     if not gu.get("history_seeded"):
@@ -334,7 +413,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             gu["history_seeded"]=True
         except Exception as exc:
             error=f"history seed: {type(exc).__name__}: {exc}"
-            await storage.update_poll_health(g,uid,last_error=error,flush=True)
+            await mark_poll_failure(g,uid,error,previous_failures)
             log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
             return 0
     if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
@@ -374,10 +453,14 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             log.exception("Failed processing %s activity for user %s.",t,uid)
         await storage.flush()
     if cycle_errors:
-        await storage.update_poll_health(g,uid,last_error="; ".join(cycle_errors))
+        error="; ".join(cycle_errors)
+        await mark_poll_failure(g,uid,error,previous_failures)
     else:
-        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error="",flush=False)
-    await storage.flush()
+        await storage.update_poll_health(
+            g,uid,last_success_at=now_iso(),last_error="",
+            consecutive_failures=0,flush=False
+        )
+        await storage.flush()
     return posted
 
 async def poll_all(g=None):
@@ -410,17 +493,20 @@ async def poll_all(g=None):
                         try:
                             ch=await bot.fetch_channel(int(x["channel_id"]))
                         except Exception as exc:
-                            await storage.update_poll_health(gid,uid,last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}")
+                            error=f"Discord channel unavailable: {type(exc).__name__}: {exc}"
+                            await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
                             log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
                             continue
 
                     try:
                         posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache)
-                    except SimklAuthError:
-                        await storage.update_poll_health(gid,uid,last_error="SIMKL authentication failed")
+                    except SimklAuthError as exc:
+                        error=f"SIMKL authentication failed: {exc}"
+                        await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
                         log.warning("Auth failed for %s.",uid)
                     except Exception as exc:
-                        await storage.update_poll_health(gid,uid,last_error=f"{type(exc).__name__}: {exc}")
+                        error=f"{type(exc).__name__}: {exc}"
+                        await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
                         log.exception("Polling failed for %s in guild %s.",uid,gid)
 
                 return posted
@@ -515,16 +601,19 @@ async def simkl_status(i):
     lines=[]
     now=datetime.now(timezone.utc)
     guild=i.guild
+    current_count=0
+    stale_count=0
     for uid, gu in users.items():
-        # Guild tracking state can remain after a member leaves so that it can
-        # be resumed if they rejoin. Do not report those orphaned records as
-        # linked accounts in the current server status.
         try:
             member=guild.get_member(int(uid))
             if member is None:
                 member=await guild.fetch_member(int(uid))
         except (discord.NotFound, discord.Forbidden, ValueError):
+            member=None
+        if member is None:
+            stale_count+=1
             continue
+        current_count+=1
         u=allu.get(uid) or {}
         username=u.get("simkl_username","unknown")
         expires=u.get("token_expires_at")
@@ -541,15 +630,26 @@ async def simkl_status(i):
         last_poll=gu.get("last_poll_at")
         last_success=gu.get("last_success_at")
         last_error=gu.get("last_error")
-        health=f"last poll {last_poll}" if last_poll else "no poll recorded yet"
+        failures=max(int(gu.get("consecutive_failures",0) or 0),0)
+        if failures:
+            health_state=f"degraded · {failures} consecutive failure(s)"
+        elif last_success:
+            health_state="healthy"
+        else:
+            health_state="not checked successfully yet"
+        health=f"health: **{health_state}**"
+        health += f" · last poll {last_poll}" if last_poll else " · no poll recorded yet"
         health += f" · last success {last_success}" if last_success else " · no successful poll yet"
         if last_error:
-            health += f" · error: {last_error}"
+            health += f" · last error: {last_error}"
         lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**\n  {health}")
-    linked="\n".join(lines) if lines else "No linked accounts."
+    linked="\n".join(lines) if lines else "No currently linked accounts."
+    tracking_total=len(users)
+    stale_note=f" · **{stale_count} stale record(s)**" if stale_count else ""
     await i.response.send_message(
         f"**Posting channel:** {text}\n"
-        f"**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n\n"
+        f"**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n"
+        f"**Tracking records:** {tracking_total} · **Current members:** {current_count}{stale_note}\n\n"
         f"**Linked accounts in this server:**\n{linked}",
         ephemeral=True,
     )

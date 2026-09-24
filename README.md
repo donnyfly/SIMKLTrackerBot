@@ -19,7 +19,7 @@ The bot supports TV shows, anime, and movies, with automatic SIMKL token refresh
 * 🎬 Tracks TV shows, anime, and movies (watching, planned, dropped, started watching, completed)
 * 🔗 Users link their own SIMKL accounts through Discord
 * 🔄 Automatically refreshes SIMKL authentication tokens
-* ⏱️ Polls SIMKL for new activity every 60 minutes by default (can be changed in `.env`)
+* ⏱️ Polls SIMKL for new activity at a configurable interval (15 minutes is the recommended production value for this self-hosted setup)
 * ⚡ Processes different SIMKL users concurrently with a configurable worker limit
 * 📊 Uses incremental syncing and `/sync/activities` to minimize unnecessary API requests
 * 📺 Groups consecutive episodes into a single Discord message
@@ -116,7 +116,7 @@ SIMKL_CLIENT_ID=your_simkl_client_id_here
 TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
 GUILD_ID=
-POLL_INTERVAL_MINUTES=60
+POLL_INTERVAL_MINUTES=15
 POLL_CONCURRENCY=5
 ```
 
@@ -162,7 +162,9 @@ The default is:
 POLL_INTERVAL_MINUTES=60
 ```
 
-This means the bot checks SIMKL every **60 minutes**.
+This means the bot checks SIMKL every **15 minutes** in the recommended production setup when using the example configuration.
+
+If the variable is omitted, the application keeps its legacy 60-minute fallback. Invalid or non-positive values are rejected at startup instead of silently falling back.
 
 You can change this value to suit your needs.
 
@@ -875,7 +877,54 @@ Keep backups somewhere secure because the data contains authentication informati
 
 ---
 
-# 15. Security
+# 15. Reliability and Recovery
+
+The bot is designed to recover from temporary SIMKL, Discord, metadata, and storage-related problems without requiring a manual restart.
+
+### Polling health
+
+Each server/user tracking record keeps:
+
+* Last poll time
+* Last successful poll time
+* Last error
+* Consecutive failure count
+
+`/simkl-status` shows the current health state for members in the server. Tracking records for members who leave are retained so their history and checkpoints can resume if they rejoin; they are shown separately as stale records instead of being treated as currently linked accounts.
+
+### Failed Discord posts
+
+A Discord message is only treated as successfully announced after Discord accepts the send. Failed sends do not advance the relevant SIMKL checkpoint.
+
+Successful episode/movie announcements are persisted immediately. This reduces the chance that a restart after a successful send will produce a duplicate announcement.
+
+For status/watchlist activity, successfully posted status changes are also persisted independently. If one item fails while another succeeds, the successful item is not repeatedly announced while the failed item remains eligible for retry.
+
+The bot does not blindly retry failed Discord sends because Discord may have accepted a message even if the client receives an error. Retrying such a request could create duplicate messages. Normal Discord rate-limit handling is left to `discord.py`.
+
+### Checkpoint safety
+
+A media-type checkpoint advances only when all required processing for that media type succeeds. If a post fails, the checkpoint remains behind and the bot will retry the activity during a later poll.
+
+Already successful announcements are recorded separately, so retrying a checkpoint does not normally duplicate them.
+
+### Configuration validation
+
+`POLL_INTERVAL_MINUTES` and `POLL_CONCURRENCY` must be positive integers. Invalid values now stop the bot with a clear startup error rather than silently changing the requested configuration.
+
+An invalid `GUILD_ID` is also rejected at startup.
+
+### Recovery behavior
+
+Temporary polling failures are recorded persistently and retried on the next scheduled poll. The scheduler's existing retry/backoff path remains in place for unexpected cycle-level failures, while individual user/server failures are isolated so one broken target does not stop the rest of the polling cycle.
+
+### Testing
+
+The project includes automated storage-health regression tests and runs them through GitHub Actions on pushes and pull requests.
+
+---
+
+# 16. Security
 
 Never share or commit:
 

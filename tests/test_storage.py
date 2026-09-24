@@ -109,3 +109,33 @@ def test_failed_flush_keeps_previous_file(tmp_path, monkeypatch):
     saved = json.loads(data_path.read_text(encoding="utf-8"))
     assert saved["users"] == {}
     assert store._dirty is True
+
+
+def test_poll_health_consecutive_failures_round_trip(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+
+    async def scenario():
+        store = storage_module.Storage()
+        store._data["users"]["42"] = {"simkl_token": "token", "simkl_username": "tester"}
+        store._guild("123", create=True)["users"]["42"] = storage_module._default_guild_user()
+        await store.update_poll_health("123", "42", last_error="temporary failure", consecutive_failures=3)
+        user = store._guild_user("123", "42")
+        assert user["consecutive_failures"] == 3
+        assert user["last_error"] == "temporary failure"
+        await store.update_poll_health("123", "42", last_success_at="2026-09-24T10:00:00Z", last_error="", consecutive_failures=0)
+        reloaded = storage_module.Storage()
+        loaded_user = reloaded._guild_user("123", "42")
+        assert loaded_user["consecutive_failures"] == 0
+        assert loaded_user["last_success_at"] == "2026-09-24T10:00:00Z"
+        assert loaded_user["last_error"] == ""
+    asyncio.run(scenario())
+
+
+def test_legacy_poll_health_defaults_include_consecutive_failures(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    data_path.write_text(json.dumps({"poll_interval_minutes": 60, "users": {}, "guilds": {"123": {"channel_id": 456, "embed_preferences": {}, "users": {"42": {"history_seeded": True, "last_checked": {}, "announced": [], "activity_state": {}, "last_poll_at": None, "last_success_at": None, "last_error": None}}}}}), encoding="utf-8")
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+    store = storage_module.Storage()
+    user = store._guild_user("123", "42")
+    assert user["consecutive_failures"] == 0
