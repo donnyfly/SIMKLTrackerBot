@@ -8,6 +8,7 @@ from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
+from imdb_client import ImdbClient
 
 load_dotenv()
 
@@ -45,7 +46,7 @@ MEDIA_STYLES={"shows":(0x3498DB,"📺 TV"),"anime":(0xE91E63,"🌸 Anime"),"movi
 HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
 poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
 logging.basicConfig(level=logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s"); log=logging.getLogger("simkl-bot")
-simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY); mdblist=MdbListClient(MDBLIST_API_KEY) if MDBLIST_API_KEY else None
+simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY); mdblist=MdbListClient(MDBLIST_API_KEY) if MDBLIST_API_KEY else None; imdb=ImdbClient()
 if mdblist is not None:
     log.info("MDBList IMDb ratings enabled.")
 else:
@@ -74,7 +75,7 @@ class SimklBot(discord.Client):
         except Exception:
             log.exception("Failed to flush persistent storage during shutdown.")
 
-        for client in (simkl,tmdb,mdblist):
+        for client in (simkl,tmdb,mdblist,imdb):
             try:
                 await client.close()
             except Exception:
@@ -147,9 +148,11 @@ async def episode_media(t,e):
             if sid:
                 d=await tmdb.get_episode_details(sid,e.get("season_num"),e["episode_number"])
                 if d: r={"series_id":sid,"season_number":int(e["season_num"]),"episode_number":e["episode_number"],"episode":d}
-    if not r: return None,e.get("episode_title")
+    if not r: return None,e.get("episode_title"),None
+    episode=r.get("episode") or {}
+    imdb_id=(episode.get("external_ids") or {}).get("imdb_id")
     still=await tmdb.get_episode_still(r["series_id"],r["season_number"],r["episode_number"])
-    return still,e.get("episode_title") or (r.get("episode") or {}).get("name")
+    return still,e.get("episode_title") or episode.get("name"),imdb_id
 
 async def prefs(g,u): return await storage.get_embed_preferences(g,u)
 async def get_imdb_rating(media_type, tmdb_id):
@@ -161,18 +164,18 @@ async def get_imdb_rating(media_type, tmdb_id):
         log.warning("MDBList rating lookup failed for %s %s.", media_type, tmdb_id, exc_info=True)
         return None
 
-async def get_anime_ratings(tmdb_id):
+async def get_movie_ratings(tmdb_id):
     if mdblist is None or tmdb_id is None:
         return None
     try:
-        ratings = await mdblist.get_ratings("show", tmdb_id)
+        ratings = await mdblist.get_ratings("movie", tmdb_id)
         return {"imdb": ratings.get("imdb"), "mal": ratings.get("myanimelist")}
     except Exception:
-        log.warning("MDBList anime rating lookup failed for %s.", tmdb_id, exc_info=True)
+        log.warning("MDBList movie rating lookup failed for %s.", tmdb_id, exc_info=True)
         return None
 
 def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,preferences=None):
-    color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short"}; p.update(preferences or {})
+    color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
     e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
     selected=poster if p["artwork"]=="poster" or p["style"]=="poster" else image
@@ -280,19 +283,17 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
         for grp in group_consecutive(es):
             try:
-                image,ep_title=await episode_media(t,grp[0])
+                image,ep_title,episode_imdb_id=await episode_media(t,grp[0])
             except Exception:
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
-                image,ep_title=None,grp[0].get("episode_title")
+                image,ep_title,episode_imdb_id=None,grp[0].get("episode_title"),None
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
-            anime_ratings = await get_anime_ratings(grp[0].get("tmdb_id")) if t == "anime" and len(grp) == 1 else None
-            rating = anime_ratings.get("imdb") if anime_ratings else (await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None)
+            rating = await imdb.get_rating(episode_imdb_id) if len(grp) == 1 and p.get("show_imdb", True) else None
             desc=f"{verb} **{label}**"
             if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
             if len(grp)==1:
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
-                if anime_ratings and anime_ratings.get("mal") is not None: desc+=f"\n⭐ MAL {anime_ratings.get('mal'):.2f}/10"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"):
                 ok=False
@@ -318,8 +319,16 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         if ids.get("tmdb") is not None:
             try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
             except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
-        rating = await get_imdb_rating("movie", ids.get("tmdb"))
-        rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
+        anime_movie = bool(ids.get("mal") or m.get("anime_type"))
+        movie_ratings = await get_movie_ratings(ids.get("tmdb")) if anime_movie else None
+        imdb_rating = movie_ratings.get("imdb") if movie_ratings else await get_imdb_rating("movie", ids.get("tmdb"))
+        mal_rating = movie_ratings.get("mal") if movie_ratings else None
+        rating_parts = []
+        if p.get("show_imdb", True) and imdb_rating is not None:
+            rating_parts.append(f"⭐ IMDb {imdb_rating:.1f}/10")
+        if anime_movie and p.get("show_mal", True) and mal_rating is not None:
+            rating_parts.append(f"⭐ MAL {mal_rating:.2f}/10")
+        rating_text = " · " + " · ".join(rating_parts) if rating_parts else ""
         verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
         e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
         if not await send_embed(ch,e,"movie"):
@@ -359,7 +368,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
             except Exception:
                 log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
-        rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb"))
+        rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb")) if p.get("show_imdb", True) else None
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
@@ -591,6 +600,61 @@ async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,art
         p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
     await storage.set_server_embed_preferences(g,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
     p=await storage.get_server_embed_preferences(g); await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nUsers with personal settings will continue using their own preferences.",ephemeral=True)
+
+@bot.tree.command(name="simkl-ratings",description="Configure which ratings are shown in activity embeds.")
+@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
+async def simkl_ratings(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+    uid=str(i.user.id)
+    if show_imdb is None and show_mal is None:
+        p=await prefs(g,uid)
+        await i.response.send_message(
+            f"IMDb ratings: **{'shown' if p.get('show_imdb', True) else 'hidden'}**\n"
+            f"MAL ratings: **{'shown' if p.get('show_mal', True) else 'hidden'}**",
+            ephemeral=True,
+        )
+        return
+    await storage.set_embed_preferences(
+        uid,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
+    )
+    p=await prefs(g,uid)
+    await i.response.send_message(
+        f"Ratings are now configured as IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="simkl-ratings-server",description="(Admin) Configure this server's default rating visibility.")
+@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
+async def simkl_ratings_server(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i):
+        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
+        return
+    if show_imdb is None and show_mal is None:
+        p=await storage.get_server_embed_preferences(g)
+        await i.response.send_message(
+            f"Server ratings: IMDb **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+            f"MAL **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+            ephemeral=True,
+        )
+        return
+    await storage.set_server_embed_preferences(
+        g,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
+    )
+    p=await storage.get_server_embed_preferences(g)
+    await i.response.send_message(
+        f"Server ratings are now IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="simkl-setchannel",description="(Admin) Set the channel where this server's watch activity is posted.")
 async def simkl_setchannel(i,channel:discord.TextChannel=None):

@@ -249,6 +249,7 @@ class TmdbClient:
             path,
             {
                 "language": "en-US",
+                "append_to_response": "external_ids",
             },
         )
 

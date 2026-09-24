@@ -22,6 +22,8 @@ DEFAULT_EMBED_PREFERENCES = {
     "style": "rich",
     "artwork": "auto",
     "activity_text": "short",
+    "show_imdb": True,
+    "show_mal": True,
 }
 
 
@@ -120,6 +122,8 @@ def _normalise_user(user: dict) -> None:
     prefs.setdefault("style", "rich")
     prefs.setdefault("artwork", "auto")
     prefs.setdefault("activity_text", "short")
+    prefs.setdefault("show_imdb", True)
+    prefs.setdefault("show_mal", True)
     user.setdefault(
         "embed_preferences_custom",
         prefs != DEFAULT_EMBED_PREFERENCES,
@@ -170,6 +174,8 @@ def _normalise_guild(guild: dict) -> None:
     guild["embed_preferences"].setdefault("style", "rich")
     guild["embed_preferences"].setdefault("artwork", "auto")
     guild["embed_preferences"].setdefault("activity_text", "short")
+    guild["embed_preferences"].setdefault("show_imdb", True)
+    guild["embed_preferences"].setdefault("show_mal", True)
     guild.setdefault("users", {})
     if not isinstance(guild["users"], dict):
         guild["users"] = {}
@@ -354,6 +360,10 @@ class Storage:
                 prefs["artwork"] = artwork
             if activity_text is not None:
                 prefs["activity_text"] = activity_text
+            if show_imdb is not None:
+                prefs["show_imdb"] = bool(show_imdb)
+            if show_mal is not None:
+                prefs["show_mal"] = bool(show_mal)
             self._dirty = True
         await self.flush()
 
@@ -366,7 +376,7 @@ class Storage:
                 return copy.deepcopy(user["embed_preferences"])
             return copy.deepcopy(guild["embed_preferences"])
 
-    async def set_embed_preferences(self, discord_user_id: str, style=None, artwork=None, activity_text=None) -> None:
+    async def set_embed_preferences(self, discord_user_id: str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None) -> None:
         async with _lock:
             user = self._user(discord_user_id)
             if not user:
@@ -378,6 +388,10 @@ class Storage:
                 prefs["artwork"] = artwork
             if activity_text is not None:
                 prefs["activity_text"] = activity_text
+            if show_imdb is not None:
+                prefs["show_imdb"] = bool(show_imdb)
+            if show_mal is not None:
+                prefs["show_mal"] = bool(show_mal)
             user["embed_preferences_custom"] = True
             self._dirty = True
         await self.flush()
