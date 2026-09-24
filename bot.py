@@ -355,39 +355,28 @@ async def poll_one(ch,g,uid,u,gu):
     return posted
 
 async def poll_all(g=None):
-    targets=await storage.get_poll_targets(g)
-    posted=0
-    for x in targets:
-        gid=x["guild_id"]
-        uid=x["discord_user_id"]
-        ch=bot.get_channel(int(x["channel_id"]))
-        if ch is None:
-            try:
-                ch=await bot.fetch_channel(int(x["channel_id"]))
+    async with poll_lock:
+        targets=await storage.get_poll_targets(g)
+        posted=0
+        for x in targets:
+            gid=x["guild_id"]
+            uid=x["discord_user_id"]
+            ch=bot.get_channel(int(x["channel_id"]))
+            if ch is None:
+                try:
+                    ch=await bot.fetch_channel(int(x["channel_id"]))
+                except Exception as exc:
+                    await storage.update_poll_health(gid,uid,last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}")
+                    log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
+                    continue
+            try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"])
+            except SimklAuthError:
+                await storage.update_poll_health(x["guild_id"],x["discord_user_id"],last_error="SIMKL authentication failed")
+                log.warning("Auth failed for %s.",x["discord_user_id"])
             except Exception as exc:
-                await storage.update_poll_health(
-                    gid,
-                    uid,
-                    last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}",
-                )
-                log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
-                continue
-        try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"])
-        except SimklAuthError:
-            await storage.update_poll_health(
-                x["guild_id"],
-                x["discord_user_id"],
-                last_error="SIMKL authentication failed",
-            )
-            log.warning("Auth failed for %s.",x["discord_user_id"])
-        except Exception as exc:
-            await storage.update_poll_health(
-                x["guild_id"],
-                x["discord_user_id"],
-                last_error=f"{type(exc).__name__}: {exc}",
-            )
-            log.exception("Polling failed for %s.",x["discord_user_id"])
-    return posted
+                await storage.update_poll_health(x["guild_id"],x["discord_user_id"],last_error=f"{type(exc).__name__}: {exc}")
+                log.exception("Polling failed for %s.",x["discord_user_id"])
+        return posted
 
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster")]
@@ -506,12 +495,9 @@ async def simkl_checknow(i):
     if time.monotonic()-last_checknow_at<CHECKNOW_COOLDOWN_SECONDS:
         await i.response.send_message("Please wait before using /simkl-checknow again.",ephemeral=True); return
     if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
-    await poll_lock.acquire(); last_checknow_at=time.monotonic()
-    try:
-        await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
-        posted=await poll_all(g)
-    finally:
-        poll_lock.release()
+    last_checknow_at=time.monotonic()
+    await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
+    posted=await poll_all(g)
     await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
 POLL_RETRY_DELAY_SECONDS=60
@@ -531,8 +517,7 @@ async def polling_loop():
     retry_delay=POLL_RETRY_DELAY_SECONDS
     while not bot.is_closed():
         try:
-            async with poll_lock:
-                await poll_all()
+            await poll_all()
             retry_delay=POLL_RETRY_DELAY_SECONDS
             await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
         except Exception:
