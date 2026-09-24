@@ -31,6 +31,7 @@ def _default_guild() -> dict:
     return {
         "channel_id": None,
         "embed_preferences": copy.deepcopy(DEFAULT_EMBED_PREFERENCES),
+        "force_embed_preferences": False,
         "users": {},
     }
 
@@ -169,6 +170,7 @@ def _normalise_guild(guild: dict) -> None:
     defaults = _default_guild()
     guild.setdefault("channel_id", defaults["channel_id"])
     guild.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
+    guild.setdefault("force_embed_preferences", False)
     if not isinstance(guild["embed_preferences"], dict):
         guild["embed_preferences"] = copy.deepcopy(DEFAULT_EMBED_PREFERENCES)
     guild["embed_preferences"].setdefault("style", "rich")
@@ -349,7 +351,7 @@ class Storage:
             guild = self._guild(guild_id, create=True)
             return copy.deepcopy(guild["embed_preferences"])
 
-    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None) -> None:
+    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None, force_override=None) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             guild = self._guild(guild_id, create=True)
@@ -364,14 +366,24 @@ class Storage:
                 prefs["show_imdb"] = bool(show_imdb)
             if show_mal is not None:
                 prefs["show_mal"] = bool(show_mal)
+            if force_override is not None:
+                guild["force_embed_preferences"] = bool(force_override)
             self._dirty = True
         await self.flush()
+
+    async def get_server_embed_force_override(self, guild_id: int | str) -> bool:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            return bool(guild.get("force_embed_preferences", False))
 
     async def get_embed_preferences(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             guild = self._guild(guild_id, create=True)
             user = self._user(discord_user_id)
+            if guild.get("force_embed_preferences", False):
+                return copy.deepcopy(guild["embed_preferences"])
             if user and user.get("embed_preferences_custom", False):
                 return copy.deepcopy(user["embed_preferences"])
             return copy.deepcopy(guild["embed_preferences"])
