@@ -318,6 +318,7 @@ async def poll_one(ch,g,uid,u,gu):
                 await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
                 posted+=wc
             else:
+                cycle_errors.append(f"{t}: partial post failure")
                 log.warning("Some %s posts failed for user %s; checkpoint not advanced.",t,uid)
         except Exception as exc:
             cycle_errors.append(f"{t}: {type(exc).__name__}")
