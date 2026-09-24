@@ -24,6 +24,10 @@ HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
 poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
 logging.basicConfig(level=logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s"); log=logging.getLogger("simkl-bot")
 simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY); mdblist=MdbListClient(MDBLIST_API_KEY) if MDBLIST_API_KEY else None
+if mdblist is not None:
+    log.info("MDBList IMDb ratings enabled.")
+else:
+    log.warning("MDBList IMDb ratings disabled: MDBLIST_API_KEY is not set.")
 
 class SimklBot(discord.Client):
     def __init__(self):
@@ -199,10 +203,11 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
             rating = await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None
-            rating_text = ""
-            desc=f"{verb} **{label}**{rating_text}"
-            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**{rating_text}"
-            if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*" + (f"\n⭐ IMDb {rating:.1f}/10" if rating is not None else "")
+            desc=f"{verb} **{label}**"
+            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
+            if len(grp)==1:
+                if ep_title: desc+=f"\n*{ep_title}*"
+                if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
             await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
