@@ -198,7 +198,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
-            rating = await get_imdb_rating("tv", grp[0].get("tmdb_id")) if len(grp) == 1 else None
+            rating = await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None
             rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
             desc=f"{verb} **{label}**{rating_text}"
             if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**{rating_text}"
@@ -243,7 +243,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
             except Exception:
                 log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
-        rating = await get_imdb_rating("movie" if t=="movies" else "tv", ids.get("tmdb"))
+        rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb"))
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,p)
