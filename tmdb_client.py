@@ -572,6 +572,9 @@ class TmdbClient:
 
         data = await self._get_json(
             f"{API_BASE}/tv/{series_id}",
+            {
+                "language": "en-US",
+            },
         )
         self._series_cache[series_id] = data
         return data
@@ -612,6 +615,28 @@ class TmdbClient:
         self._season_cache[cache_key] = data
 
         return data
+
+    # ------------------------------------------------------------------
+    # TV series title
+    # ------------------------------------------------------------------
+
+    async def get_tv_title(
+        self,
+        series_id,
+    ) -> str | None:
+        """Return the TMDB English-localized TV series title."""
+
+        try:
+            series_id = int(series_id)
+        except (TypeError, ValueError):
+            return None
+
+        data = await self._get_series_details(series_id)
+        if not data:
+            return None
+
+        title = data.get("name")
+        return str(title) if title else None
 
     # ------------------------------------------------------------------
     # TV backdrops
