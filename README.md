@@ -110,6 +110,7 @@ The bot uses the following environment variables:
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 TMDB_API_KEY=your_tmdb_api_key_here
+MDBLIST_API_KEY=your_mdblist_api_key_here
 GUILD_ID=
 POLL_INTERVAL_MINUTES=60
 ```
@@ -125,6 +126,12 @@ Your SIMKL application's Client ID.
 ## `TMDB_API_KEY`
 
 Your TMDB API key. TMDB is used for episode stills, episode titles, TV/movie backdrops, and anime episode resolution.
+
+## `MDBLIST_API_KEY`
+
+Optional MDBList API key. When configured, the bot displays the IMDb rating for movies and TV/anime titles. MDBList provides a free API tier with 1,000 requests per day. The bot caches ratings in memory for 6 hours to avoid unnecessary requests.
+
+Get an API key from your MDBList account preferences.
 
 ## `GUILD_ID`
 
@@ -708,6 +715,8 @@ The bot can report these activity types:
 * **dropped**
 * **watched**
 * **rewatched**
+
+When `MDBLIST_API_KEY` is configured, movies and TV/anime titles also show their IMDb rating when MDBList has one available.
 
 For a single episode, the bot uses the episode's TMDB still when available. Movies and planned TV/anime activity use landscape TMDB artwork. If TMDB artwork cannot be found, the bot falls back to the SIMKL poster where available.
 
