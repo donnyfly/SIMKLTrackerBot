@@ -55,10 +55,8 @@ class SimklBot(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.default()); self.tree=app_commands.CommandTree(self)
     async def setup_hook(self):
-        if GUILD_ID:
-            g=discord.Object(id=int(GUILD_ID)); self.tree.copy_global_to(guild=g); await self.tree.sync(guild=g); log.info("Slash commands synced to development guild %s.",GUILD_ID)
-        else:
-            await self.tree.sync(); log.info("Slash commands synced globally.")
+        await self.tree.sync()
+        log.info("Slash commands synced globally.")
     async def close(self):
         poll_task = getattr(self, "_poll_task", None)
         if poll_task and not poll_task.done():
@@ -464,9 +462,21 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     return posted
 
 async def poll_all(g=None):
+    started = time.monotonic()
+
     async with poll_lock:
-        started=time.monotonic()
         targets=await storage.get_poll_targets(g)
+
+        log.info("DEBUG poll targets: %s", [
+            (
+                x["guild_id"],
+                x["discord_user_id"],
+                x["channel_id"],
+                bool(x["user_data"].get("simkl_token"))
+            )
+            for x in targets
+        ])
+
         if not targets:
             log.info("Polling cycle: no linked users with configured channels.")
             return 0
