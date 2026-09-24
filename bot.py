@@ -301,7 +301,7 @@ async def simkl_unlink(i):
 
 @bot.tree.command(name="simkl-style",description="Choose your personal SIMKL activity embed preferences.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
-async def simkl_style(i,style=None,artwork=None,activity_text=None):
+async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None):
     g=guild_id(i)
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     uid=str(i.user.id)
@@ -312,7 +312,7 @@ async def simkl_style(i,style=None,artwork=None,activity_text=None):
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
-async def simkl_style_server(i,style=None,artwork=None,activity_text=None):
+async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
     if style is None and artwork is None and activity_text is None:
