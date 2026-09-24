@@ -199,10 +199,10 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 image,ep_title=None,grp[0].get("episode_title")
             label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
             rating = await get_imdb_rating("show", grp[0].get("tmdb_id")) if len(grp) == 1 else None
-            rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
+            rating_text = ""
             desc=f"{verb} **{label}**{rating_text}"
             if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**{rating_text}"
-            if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*"
+            if len(grp)==1 and ep_title: desc+=f"\n*{ep_title}*" + (f"\n⭐ IMDb {rating:.1f}/10" if rating is not None else "")
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
             if not await send_embed(ch,e,"episode"): ok=False; continue
             await storage.add_announced(g,uid,[x["key"] for x in grp]); pending.update({x["key"]:x["watched_raw"] for x in grp}); count+=len(grp)
