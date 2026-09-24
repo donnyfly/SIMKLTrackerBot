@@ -531,7 +531,8 @@ async def polling_loop():
     retry_delay=POLL_RETRY_DELAY_SECONDS
     while not bot.is_closed():
         try:
-            await poll_all()
+            async with poll_lock:
+                await poll_all()
             retry_delay=POLL_RETRY_DELAY_SECONDS
             await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
         except Exception:
