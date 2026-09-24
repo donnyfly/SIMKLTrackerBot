@@ -890,6 +890,13 @@ async def seed_history(
                     watch_times[key] = watched_raw
 
         else:
+            for raw_item in items or []:
+                raw_show = raw_item.get("show") or {}
+                raw_ids = raw_show.get("ids") or {}
+                raw_simkl_id = raw_ids.get("simkl")
+                raw_status = raw_item.get("status")
+                if raw_simkl_id is not None and raw_status:
+                    statuses[f"{media_type}:{raw_simkl_id}"] = raw_status
             for ep in iter_show_episodes(
                 media_type,
                 items,
@@ -1721,6 +1728,16 @@ async def poll_single_user(
                 # Do not advance checkpoint.
                 continue
 
+            status_count, status_sent = await process_status_items(
+                channel,
+                discord_user_id,
+                display_name,
+                member,
+                media_type,
+                items,
+                profile_url,
+            )
+
             if media_type == "movies":
                 (
                     new_count,
@@ -1749,6 +1766,8 @@ async def poll_single_user(
                     items,
                     profile_url,
                 )
+
+            all_sent = all_sent and status_sent
 
             # The checkpoint comes from /sync/activities,
             # not watched_at, because bulk-marked episodes can
