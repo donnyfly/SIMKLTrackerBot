@@ -320,7 +320,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
         return 0
     try:
-        activities,token=await cached_simkl_activities(uid,u,token,request_cache or {})
+        activities,token=await cached_simkl_activities(uid,u,token,request_cache if request_cache is not None else {})
     except Exception as exc:
         error=f"activity fetch: {type(exc).__name__}: {exc}"
         await storage.update_poll_health(g,uid,last_error=error)
