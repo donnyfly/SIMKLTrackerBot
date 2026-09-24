@@ -175,15 +175,19 @@ async def get_movie_ratings(tmdb_id):
         log.warning("MDBList movie rating lookup failed for %s.", tmdb_id, exc_info=True)
         return None
 
-def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,preferences=None):
+def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,logo=None,preferences=None):
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
     e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
     selected=poster if p["artwork"]=="poster" or p["style"]=="poster" else image
     selected=selected or poster or image
     if selected:
-        if p["style"]=="minimal": e.set_thumbnail(url=selected)
-        else: e.set_image(url=selected)
+        if p["style"]=="minimal":
+            e.set_thumbnail(url=selected)
+        else:
+            e.set_image(url=selected)
+            if p["artwork"]=="backdrop" and logo:
+                e.set_thumbnail(url=logo)
     e.set_footer(text=f"{label} · SIMKL"); return e
 async def send_embed(ch,e,what):
     try:
@@ -295,7 +299,13 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             if len(grp)==1:
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
-            e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,p)
+            logo=None
+            if p["artwork"]=="backdrop" and grp[0].get("tmdb_id") is not None:
+                try:
+                    logo=await tmdb.get_tv_logo(grp[0]["tmdb_id"])
+                except Exception:
+                    log.warning("TMDB TV logo lookup failed for %s.", title, exc_info=True)
+            e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,logo,p)
             if not await send_embed(ch,e,"episode"):
                 ok=False
                 continue
@@ -331,7 +341,13 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
             rating_parts.append(f"⭐ MAL {mal_rating:.2f}/10")
         rating_text = " · " + " · ".join(rating_parts) if rating_parts else ""
         verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
-        e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,p)
+        logo=None
+        if p["artwork"]=="backdrop" and ids.get("tmdb") is not None:
+            try:
+                logo=await tmdb.get_movie_logo(ids["tmdb"])
+            except Exception:
+                log.warning("TMDB movie logo lookup failed for %s.", title, exc_info=True)
+        e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,logo,p)
         if not await send_embed(ch,e,"movie"):
             ok=False
             continue
@@ -539,7 +555,7 @@ async def poll_all(g=None):
         )
         return posted
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
-ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster")]
+ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster"),app_commands.Choice(name="Backdrop",value="backdrop")]
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
 
