@@ -1,0 +1,62 @@
+name: Discord Commit Notifications
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send commit notification
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+
+          with open(os.environ["GITHUB_EVENT_PATH"], "r") as f:
+              event = json.load(f)
+
+          actor = event["sender"]["login"]
+          avatar_url = event["sender"]["avatar_url"]
+          repo = event["repository"]["name"]
+          commits = event.get("commits", [])
+
+          commit_lines = []
+
+          for commit in commits:
+              sha = commit["id"][:7]
+              url = commit["url"]
+              message = commit["message"].split("\n")[0]
+
+              commit_lines.append(
+                  f"[{sha}]({url}) — {message}"
+              )
+
+          count = len(commits)
+          title = f"[{repo}:main] {count} new commit{'s' if count != 1 else ''}"
+
+          embed = {
+              "author": {
+                  "name": actor,
+                  "icon_url": avatar_url
+              },
+              "title": title,
+              "description": "\n".join(commit_lines),
+              "color": 5814783
+          }
+
+          payload = {
+              "embeds": [embed]
+          }
+
+          with open("payload.json", "w") as f:
+              json.dump(payload, f)
+
+          EOF
+
+          curl             --fail-with-body             -H "Content-Type: application/json"             -d @payload.json             "$WEBHOOK"
