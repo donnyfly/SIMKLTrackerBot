@@ -69,6 +69,11 @@ if not TMDB_API_KEY:
 # ---------------------------------------------------------------------------
 
 MEDIA_TYPES = ("shows", "anime", "movies")
+WATCHLIST_STATUSES = ("watching", "plantowatch", "completed", "dropped")
+STATUS_TEXT = {"watching": "started watching", "plantowatch": "planned to watch", "completed": "completed", "dropped": "dropped"}
+EMBED_STYLES = ("rich", "minimal", "poster")
+ARTWORK_STYLES = ("auto", "poster")
+ACTIVITY_TEXT_STYLES = ("short", "detailed")
 
 # Key used for each media type in the /sync/activities response.
 ACTIVITY_KEYS = {
@@ -612,6 +617,14 @@ async def get_episode_media(
 # ---------------------------------------------------------------------------
 
 
+def _default_embed_preferences() -> dict:
+    return {"style": "rich", "artwork": "auto", "activity_text": "short"}
+
+
+async def get_embed_preferences(discord_user_id: str) -> dict:
+    return await storage.get_embed_preferences(discord_user_id)
+
+
 def build_activity_embed(
     media_type: str,
     description: str,
@@ -622,53 +635,35 @@ def build_activity_embed(
     profile_url: str | None,
     title: str | None = None,
     title_url: str | None = None,
+    poster_url: str | None = None,
+    preferences: dict | None = None,
 ) -> discord.Embed:
     color, label = MEDIA_STYLES[media_type]
-
-    embed = discord.Embed(
-        title=title,
-        url=title_url,
-        description=description,
-        color=color,
-        timestamp=timestamp,
-    )
-
-    embed.set_author(
-        name=f"{display_name}'s Activity",
-        url=profile_url,
-        icon_url=(
-            member.display_avatar.url
-            if member
-            else None
-        ),
-    )
-
-    if image_url:
-        embed.set_image(url=image_url)
-
-    embed.set_footer(
-        text=f"{label} · SIMKL"
-    )
-
+    prefs = {**_default_embed_preferences(), **(preferences or {})}
+    style = prefs.get("style", "rich")
+    artwork = prefs.get("artwork", "auto")
+    embed = discord.Embed(title=title, url=title_url, description=description, color=color, timestamp=timestamp)
+    embed.set_author(name=f"{display_name}'s Activity", url=profile_url, icon_url=member.display_avatar.url if member else None)
+    selected_image = poster_url if artwork == "poster" else image_url
+    if not selected_image:
+        selected_image = poster_url or image_url
+    if selected_image:
+        if style == "minimal":
+            embed.set_thumbnail(url=selected_image)
+        else:
+            embed.set_image(url=selected_image)
+    embed.set_footer(text=f"{label} · SIMKL")
     return embed
 
 
-async def send_embed(
-    channel,
-    embed: discord.Embed,
-    what: str,
-) -> bool:
-    """Send an embed; return False if it failed."""
-
+async def send_embed(channel, embed: discord.Embed, what: str) -> bool:
     try:
         await channel.send(embed=embed)
         return True
     except Exception:
-        log.exception(
-            "Failed to send %s embed.",
-            what,
-        )
+        log.exception("Failed to send %s embed.", what)
         return False
+
 
 
 # ---------------------------------------------------------------------------
@@ -847,6 +842,8 @@ async def seed_history(
     )
 
     keys = []
+    statuses = {}
+    watch_times = {}
 
     for media_type in MEDIA_TYPES:
         since_dt = parse_iso(
@@ -885,12 +882,12 @@ async def seed_history(
                 ):
                     continue
 
-                keys.append(
-                    movie_key(
-                        media_type,
-                        simkl_id,
-                    )
-                )
+                key = movie_key(media_type, simkl_id)
+                keys.append(key)
+                if item.get("status"):
+                    statuses[f"{media_type}:{simkl_id}"] = item["status"]
+                if watched_raw:
+                    watch_times[key] = watched_raw
 
         else:
             for ep in iter_show_episodes(
@@ -904,11 +901,11 @@ async def seed_history(
                     continue
 
                 keys.append(ep["key"])
+                if ep.get("watched_raw"):
+                    watch_times[ep["key"]] = ep["watched_raw"]
 
-    await storage.mark_history_seeded(
-        discord_user_id,
-        keys,
-    )
+    await storage.mark_history_seeded(discord_user_id, keys)
+    await storage.update_activity_state(discord_user_id, statuses=statuses, watch_times=watch_times)
 
     user_data["history_seeded"] = True
 
@@ -1202,6 +1199,47 @@ async def simkl_unlink(
 
 
 # ---------------------------------------------------------------------------
+# User embed preferences
+# ---------------------------------------------------------------------------
+
+STYLE_CHOICES = [
+    app_commands.Choice(name="Rich (large artwork)", value="rich"),
+    app_commands.Choice(name="Minimal (small artwork)", value="minimal"),
+    app_commands.Choice(name="Poster (large poster)", value="poster"),
+]
+ARTWORK_CHOICES = [
+    app_commands.Choice(name="Automatic", value="auto"),
+    app_commands.Choice(name="Poster only", value="poster"),
+]
+TEXT_CHOICES = [
+    app_commands.Choice(name="Short", value="short"),
+    app_commands.Choice(name="Detailed", value="detailed"),
+]
+
+@bot.tree.command(name="simkl-style", description="Choose how your SIMKL activity embeds are displayed.")
+@app_commands.describe(style="Embed layout.", artwork="Choose which artwork type to use.", activity_text="Choose short or detailed activity wording.")
+@app_commands.choices(style=STYLE_CHOICES, artwork=ARTWORK_CHOICES, activity_text=TEXT_CHOICES)
+async def simkl_style(interaction: discord.Interaction, style: app_commands.Choice[str] | None = None, artwork: app_commands.Choice[str] | None = None, activity_text: app_commands.Choice[str] | None = None):
+    user_id = str(interaction.user.id)
+    current = await storage.get_embed_preferences(user_id)
+    if style is None and artwork is None and activity_text is None:
+        await interaction.response.send_message(
+            f"Embed style: {current['style']}\\nArtwork: {current['artwork']}\\nActivity text: {current['activity_text']}", ephemeral=True
+        )
+        return
+    await storage.set_embed_preferences(
+        user_id,
+        style=style.value if style else None,
+        artwork=artwork.value if artwork else None,
+        activity_text=activity_text.value if activity_text else None,
+    )
+    updated = await storage.get_embed_preferences(user_id)
+    await interaction.response.send_message(
+        f"Updated: {updated['style']} / {updated['artwork']} / {updated['activity_text']}", ephemeral=True
+    )
+
+
+# ---------------------------------------------------------------------------
 # Admin commands
 # ---------------------------------------------------------------------------
 
@@ -1378,215 +1416,46 @@ async def simkl_checknow(
 # ---------------------------------------------------------------------------
 
 
-async def process_show_items(
-    channel,
-    discord_user_id: str,
-    display_name: str,
-    member,
-    media_type: str,
-    items,
-    profile_url: str | None = None,
-):
-    """
-    Post every watched episode that hasn't been announced yet.
-
-    Single episodes:
-        Title
-        watched S01E05
-        *Episode Title*
-        landscape still
-
-    Episode ranges:
-        Title
-        watched S01E05-E08
-        representative landscape still
-    """
-
-    announced = await storage.get_announced(
-        discord_user_id
-    )
-
-    groups = defaultdict(
-        lambda: {
-            "title": None,
-            "slug": None,
-            "poster": None,
-            "tmdb_id": None,
-            "tvdb_id": None,
-            "episodes": [],
-        }
-    )
-
-    for ep in iter_show_episodes(
-        media_type,
-        items,
-    ):
-        if (
-            ep["watched_dt"] is None
-            or ep["key"] in announced
-        ):
+async def process_show_items(channel, discord_user_id: str, display_name: str, member, media_type: str, items, profile_url: str | None = None):
+    announced = await storage.get_announced(discord_user_id)
+    state = await storage.get_activity_state(discord_user_id)
+    watch_times = state.get("watch_times", {})
+    preferences = await get_embed_preferences(discord_user_id)
+    groups = defaultdict(lambda: {"title": None, "slug": None, "poster": None, "episodes": []})
+    for ep in iter_show_episodes(media_type, items):
+        if ep["watched_dt"] is None:
             continue
-
-        # Prevent duplicate processing inside one response.
-        announced.add(
-            ep["key"]
-        )
-
-        group = groups[
-            (
-                ep["simkl_id"],
-                ep["season_num"],
-            )
-        ]
-
-        group["title"] = ep[
-            "show_title"
-        ]
-
-        group["slug"] = ep[
-            "slug"
-        ]
-
-        group["poster"] = ep[
-            "poster"
-        ]
-
-        group["tmdb_id"] = ep.get(
-            "tmdb_id"
-        )
-
-        group["tvdb_id"] = ep.get(
-            "tvdb_id"
-        )
-
-        group["episodes"].append(
-            ep
-        )
-
-    total_new = 0
-    all_sent = True
-
-    for (
-        simkl_id,
-        season_num,
-    ), group in groups.items():
-
-        title = (
-            group["title"]
-            or "a show"
-        )
-
-        title_url = simkl_title_url(
-            media_type,
-            simkl_id,
-            group["slug"],
-        )
-
-        fallback_poster_url = (
-            simkl_poster_url(
-                group["poster"]
-            )
-        )
-
-        for episode_group in group_consecutive_episodes(
-            group["episodes"]
-        ):
-            first = episode_group[0]
-            last = episode_group[-1]
-
-            episode_label = format_episode_range(
-                season_num,
-                first["episode_number"],
-                last["episode_number"],
-            )
-
-            # -------------------------------------------------------
-            # TMDB image/title lookup
-            #
-            # For ranges we deliberately use the FIRST episode's
-            # still as the representative image.
-            # -------------------------------------------------------
-
-            image_url = None
-            episode_title = None
-
-            try:
-                image_url, episode_title = (
-                    await get_episode_media(
-                        media_type,
-                        first,
-                    )
-                )
-            except Exception:
-                log.warning(
-                    "TMDB episode lookup failed "
-                    "for %s %s.",
-                    title,
-                    episode_label,
-                    exc_info=True,
-                )
-
-            # Fall back to the SIMKL poster if TMDB has no still.
-            if not image_url:
-                image_url = fallback_poster_url
-
-            # -------------------------------------------------------
-            # Description
-            # -------------------------------------------------------
-
-            description = (
-                f"watched **{episode_label}**"
-            )
-
-            # Only individual episodes get an episode title.
-            if (
-                len(episode_group) == 1
-                and episode_title
-            ):
-                description += (
-                    f"\n*{episode_title}*"
-                )
-
-            # -------------------------------------------------------
-            # Build embed
-            # -------------------------------------------------------
-
-            embed = build_activity_embed(
-                media_type,
-                description,
-                max(
-                    ep["watched_dt"]
-                    for ep in episode_group
-                ),
-                display_name,
-                member,
-                image_url,
-                profile_url,
-                title=title,
-                title_url=title_url,
-            )
-
-            if not await send_embed(
-                channel,
-                embed,
-                "episode",
-            ):
-                all_sent = False
-                continue
-
-            # Mark every episode in this range as announced.
-            keys = [
-                ep["key"]
-                for ep in episode_group
-            ]
-
-            await storage.add_announced(
-                discord_user_id,
-                keys,
-            )
-
-            total_new += len(keys)
-
+        previous_raw = watch_times.get(ep["key"])
+        previous_dt = parse_iso(previous_raw) if previous_raw else None
+        is_rewatch = ep["key"] in announced and previous_dt is not None and ep["watched_dt"] > previous_dt
+        is_new = ep["key"] not in announced
+        if not is_new and not is_rewatch:
+            continue
+        ep = dict(ep)
+        ep["activity_type"] = "rewatched" if is_rewatch else "watched"
+        group = groups[(ep["simkl_id"], ep["season_num"], ep["activity_type"])]
+        group["title"] = ep["show_title"]; group["slug"] = ep["slug"]; group["poster"] = ep["poster"]; group["episodes"].append(ep)
+    total_new = 0; all_sent = True; pending_watch_times = {}
+    for (simkl_id, season_num, activity_type), group in groups.items():
+        title = group["title"] or "a show"; title_url = simkl_title_url(media_type, simkl_id, group["slug"]); fallback = simkl_poster_url(group["poster"])
+        for episode_group in group_consecutive_episodes(group["episodes"]):
+            first, last = episode_group[0], episode_group[-1]
+            episode_label = format_episode_range(season_num, first["episode_number"], last["episode_number"])
+            image_url = None; episode_title = None
+            try: image_url, episode_title = await get_episode_media(media_type, first)
+            except Exception: log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
+            image_url = image_url or fallback
+            verb = "rewatched" if activity_type == "rewatched" else "watched"
+            description = f"{verb} **{episode_label}**"
+            if preferences.get("activity_text") == "detailed": description = f"{verb} **{episode_label}** of **{title}**"
+            if len(episode_group) == 1 and episode_title: description += f"\\n*{episode_title}*"
+            embed = build_activity_embed(media_type, description, max(ep["watched_dt"] for ep in episode_group), display_name, member, image_url, profile_url, title=title, title_url=title_url, poster_url=fallback, preferences=preferences)
+            if not await send_embed(channel, embed, "episode"):
+                all_sent = False; continue
+            await storage.add_announced(discord_user_id, [ep["key"] for ep in episode_group])
+            for ep in episode_group: pending_watch_times[ep["key"]] = ep["watched_raw"]
+            total_new += len(episode_group)
+    if pending_watch_times: await storage.update_activity_state(discord_user_id, watch_times=pending_watch_times)
     return total_new, all_sent
 
 
@@ -1595,154 +1464,47 @@ async def process_show_items(
 # ---------------------------------------------------------------------------
 
 
-async def process_movie_items(
-    channel,
-    discord_user_id: str,
-    display_name: str,
-    member,
-    media_type: str,
-    items,
-    since_dt: datetime,
-    profile_url: str | None = None,
-):
-    """
-    Post movies watched since the last check.
-
-    Uses a TMDB landscape backdrop when available,
-    falling back to the SIMKL poster otherwise.
-    """
-
-    announced = await storage.get_announced(
-        discord_user_id
-    )
-
-    total_new = 0
-    all_sent = True
-
+async def process_movie_items(channel, discord_user_id: str, display_name: str, member, media_type: str, items, since_dt: datetime, profile_url: str | None = None):
+    announced = await storage.get_announced(discord_user_id); state = await storage.get_activity_state(discord_user_id); watch_times = state.get("watch_times", {}); preferences = await get_embed_preferences(discord_user_id)
+    total_new = 0; all_sent = True; pending = {}
     for item in items or []:
-        movie = item.get(
-            "movie"
-        ) or {}
-
-        title = movie.get(
-            "title",
-            "a movie",
-        )
-
-        ids = movie.get(
-            "ids"
-        ) or {}
-
-        simkl_id = ids.get(
-            "simkl"
-        )
-
-        slug = ids.get(
-            "slug"
-        )
-
-        poster = movie.get(
-            "poster"
-        )
-
-        tmdb_id = ids.get(
-            "tmdb"
-        )
-
-        if simkl_id is None:
-            continue
-
-        watched_raw = item.get(
-            "last_watched_at"
-        )
-
-        if not watched_raw:
-            continue
-
-        watched_dt = parse_iso(
-            watched_raw
-        )
-
-        # Only announce movies with a newer watch timestamp.
-        if watched_dt <= since_dt:
-            continue
-
-        key = movie_key(
-            media_type,
-            simkl_id,
-        )
-
-        if key in announced:
-            continue
-
-        announced.add(key)
-
-        title_url = simkl_title_url(
-            media_type,
-            simkl_id,
-            slug,
-        )
-
-        # -----------------------------------------------------------
-        # TMDB movie backdrop
-        # -----------------------------------------------------------
-
-        image_url = None
-
-        if tmdb_id is not None:
-            try:
-                image_url = (
-                    await tmdb.get_movie_backdrop(
-                        tmdb_id
-                    )
-                )
-            except Exception:
-                log.warning(
-                    "TMDB movie backdrop lookup failed "
-                    "for %s (TMDB ID %s).",
-                    title,
-                    tmdb_id,
-                    exc_info=True,
-                )
-
-        # Fallback to SIMKL poster.
-        if not image_url:
-            image_url = simkl_poster_url(
-                poster
-            )
-
-        # -----------------------------------------------------------
-        # Movie embed
-        # -----------------------------------------------------------
-
-        embed = build_activity_embed(
-            media_type,
-            "watched a movie",
-            watched_dt,
-            display_name,
-            member,
-            image_url,
-            profile_url,
-            title=title,
-            title_url=title_url,
-        )
-
-        if not await send_embed(
-            channel,
-            embed,
-            "movie",
-        ):
-            all_sent = False
-            continue
-
-        await storage.add_announced(
-            discord_user_id,
-            [key],
-        )
-
-        total_new += 1
-
+        movie = item.get("movie") or {}; ids = movie.get("ids") or {}; simkl_id = ids.get("simkl"); watched_raw = item.get("last_watched_at")
+        if simkl_id is None or not watched_raw: continue
+        watched_dt = parse_iso(watched_raw); key = movie_key(media_type, simkl_id); previous_raw = watch_times.get(key); previous_dt = parse_iso(previous_raw) if previous_raw else None
+        is_rewatch = key in announced and previous_dt is not None and watched_dt > previous_dt; is_new = key not in announced and watched_dt > since_dt
+        if not is_new and not is_rewatch: continue
+        title = movie.get("title", "a movie"); title_url = simkl_title_url(media_type, simkl_id, ids.get("slug")); poster_url = simkl_poster_url(movie.get("poster")); image_url = None
+        if ids.get("tmdb") is not None:
+            try: image_url = await tmdb.get_movie_backdrop(ids["tmdb"])
+            except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
+        image_url = image_url or poster_url; verb = "rewatched" if is_rewatch else "watched a movie"; description = verb
+        if preferences.get("activity_text") == "detailed": description = f"{verb} **{title}**"
+        embed = build_activity_embed(media_type, description, watched_dt, display_name, member, image_url, profile_url, title=title, title_url=title_url, poster_url=poster_url, preferences=preferences)
+        if not await send_embed(channel, embed, "movie"): all_sent = False; continue
+        await storage.add_announced(discord_user_id, [key]); pending[key] = watched_raw; total_new += 1
+    if pending: await storage.update_activity_state(discord_user_id, watch_times=pending)
     return total_new, all_sent
+
+
+async def process_status_items(channel, discord_user_id: str, display_name: str, member, media_type: str, items, profile_url: str | None = None, baseline: bool = False):
+    state = await storage.get_activity_state(discord_user_id); statuses = state.get("statuses", {}); preferences = await get_embed_preferences(discord_user_id); pending = {}; sent_count = 0; all_sent = True
+    for item in items or []:
+        media = (item.get("movie") if media_type == "movies" else item.get("show")) or {}; ids = media.get("ids") or {}; simkl_id = ids.get("simkl"); status = item.get("status")
+        if simkl_id is None or status not in WATCHLIST_STATUSES: continue
+        state_key = f"{media_type}:{simkl_id}"; previous = statuses.get(state_key); pending[state_key] = status
+        if baseline or previous is None or previous == status: continue
+        title = media.get("title") or "Untitled"; title_url = simkl_title_url(media_type, simkl_id, ids.get("slug")); poster_url = simkl_poster_url(media.get("poster")); image_url = None
+        try:
+            if ids.get("tmdb") is not None:
+                image_url = await (tmdb.get_movie_backdrop(ids["tmdb"]) if media_type == "movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
+        except Exception: log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
+        image_url = image_url or poster_url; description = STATUS_TEXT[status]
+        if preferences.get("activity_text") == "detailed": description = f"{STATUS_TEXT[status]} **{title}**"
+        embed = build_activity_embed(media_type, description, datetime.now(timezone.utc), display_name, member, image_url, profile_url, title=title, title_url=title_url, poster_url=poster_url, preferences=preferences)
+        if not await send_embed(channel, embed, status): all_sent = False; continue
+        sent_count += 1
+    if pending and all_sent: await storage.update_activity_state(discord_user_id, statuses=pending)
+    return sent_count, all_sent
 
 
 # ---------------------------------------------------------------------------
