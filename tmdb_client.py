@@ -39,6 +39,16 @@ class TmdbClient:
             str | None,
         ] = {}
 
+        self._movie_logo_cache: dict[
+            int,
+            str | None,
+        ] = {}
+
+        self._tv_logo_cache: dict[
+            int,
+            str | None,
+        ] = {}
+
         # Cache TVDB -> TMDB series lookups.
         self._tvdb_series_cache: dict[
             int,
@@ -637,6 +647,76 @@ class TmdbClient:
         result = f"{IMAGE_BASE}{path}" if path else None
         self._tv_backdrop_cache[series_id] = result
         return result
+
+
+    # ------------------------------------------------------------------
+    # Title logos
+    # ------------------------------------------------------------------
+
+    async def _get_title_logo(
+        self,
+        path: str,
+        cache: dict[int, str | None],
+        item_id: int,
+    ) -> str | None:
+        """Return the highest-rated English/neutral transparent title logo."""
+
+        if item_id in cache:
+            return cache[item_id]
+
+        data = await self._get_json(
+            path,
+            {
+                "include_image_language": "en,null",
+            },
+        )
+
+        if not data:
+            cache[item_id] = None
+            return None
+
+        logos = data.get("logos") or []
+        if not logos:
+            cache[item_id] = None
+            return None
+
+        logos = sorted(
+            logos,
+            key=lambda image: (
+                image.get("vote_average", 0),
+                image.get("vote_count", 0),
+            ),
+            reverse=True,
+        )
+
+        logo_path = logos[0].get("file_path")
+        result = f"https://image.tmdb.org/t/p/w500{logo_path}" if logo_path else None
+        cache[item_id] = result
+        return result
+
+    async def get_movie_logo(self, movie_id) -> str | None:
+        try:
+            movie_id = int(movie_id)
+        except (TypeError, ValueError):
+            return None
+
+        return await self._get_title_logo(
+            f"{API_BASE}/movie/{movie_id}/images",
+            self._movie_logo_cache,
+            movie_id,
+        )
+
+    async def get_tv_logo(self, series_id) -> str | None:
+        try:
+            series_id = int(series_id)
+        except (TypeError, ValueError):
+            return None
+
+        return await self._get_title_logo(
+            f"{API_BASE}/tv/{series_id}/images",
+            self._tv_logo_cache,
+            series_id,
+        )
 
     # ------------------------------------------------------------------
     # Movies
