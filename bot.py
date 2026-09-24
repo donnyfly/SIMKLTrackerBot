@@ -26,14 +26,8 @@ DISCORD_BOT_TOKEN=os.getenv("DISCORD_BOT_TOKEN")
 SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID")
 TMDB_API_KEY=os.getenv("TMDB_API_KEY")
 MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY")
-GUILD_ID=os.getenv("GUILD_ID")
 POLL_INTERVAL_MINUTES=positive_int_env("POLL_INTERVAL_MINUTES", 60)
 POLL_CONCURRENCY=positive_int_env("POLL_CONCURRENCY", 5)
-if GUILD_ID:
-    try:
-        int(GUILD_ID)
-    except ValueError:
-        raise SystemExit(f"Invalid GUILD_ID={GUILD_ID!r}. It must be a Discord server ID.")
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
 if not TMDB_API_KEY:
