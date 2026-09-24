@@ -1,7 +1,11 @@
-venv
-__pycache__
+venv/
+__pycache__/
 *.pyc
-.git
-.gitignore
+.git/
 .env
-storage.json
+data/
+tests/
+.github/
+README.md
+LICENSE
+docker-compose.yml
