@@ -186,7 +186,7 @@ def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,po
             e.set_thumbnail(url=selected)
         else:
             e.set_image(url=selected)
-            if p["artwork"]=="backdrop" and logo:
+            if p["artwork"] in ("auto", "backdrop") and logo:
                 e.set_thumbnail(url=logo)
     e.set_footer(text=f"{label} · SIMKL"); return e
 async def send_embed(ch,e,what):
