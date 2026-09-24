@@ -153,7 +153,10 @@ async def episode_media(t,e):
     episode=r.get("episode") or {}
     imdb_id=(episode.get("external_ids") or {}).get("imdb_id")
     still=await tmdb.get_episode_still(r["series_id"],r["season_number"],r["episode_number"])
-    return still,e.get("episode_title") or episode.get("name"),imdb_id
+    # SIMKL anime episode titles can be romanized/romaji. Prefer TMDB's
+    # English-localized title (get_episode_details requests en-US), with
+    # SIMKL's title only as a fallback when TMDB has no English title.
+    return still,episode.get("name") or e.get("episode_title"),imdb_id
 
 async def prefs(g,u): return await storage.get_embed_preferences(g,u)
 async def get_imdb_rating(media_type, tmdb_id):
