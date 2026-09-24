@@ -361,6 +361,12 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         if baseline or statuses.get(key)==status:
             successful[key]=status
             continue
+        # Movies already generate a dedicated "watched" activity. Treat the
+        # SIMKL "completed" status as internal state for movies so it does not
+        # create a duplicate notification. TV/anime still use "completed".
+        if t=="movies" and status=="completed":
+            successful[key]=status
+            continue
         title=m.get("title") or "Untitled"
         poster=simkl_poster_url(m.get("poster"))
         image=None
