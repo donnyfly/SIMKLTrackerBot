@@ -69,7 +69,8 @@ Activity messages can be customized using `/simkl-style`.
 
 **Artwork**
 - **Automatic** — chooses the most appropriate available artwork
-- **Poster only** — prefers poster artwork
+- **Poster only** — uses poster artwork
+- **Backdrop** — uses landscape backdrop artwork; when TMDB has a title logo, it is shown as a small thumbnail in the embed's corner
 
 **Activity text**
 - **Short** — compact activity messages
