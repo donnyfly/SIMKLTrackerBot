@@ -185,7 +185,6 @@ DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
-GUILD_ID=
 POLL_INTERVAL_MINUTES=60
 POLL_CONCURRENCY=5
 ```
@@ -465,18 +464,6 @@ Optional. Used for IMDb and MyAnimeList ratings.
 
 ## Optional settings
 
-### `GUILD_ID`
-
-Optional Discord server ID used for faster server-specific slash command synchronization.
-
-Leave it empty to use global command synchronization.
-
-Example:
-
-```env
-GUILD_ID=123456789012345678
-```
-
 ### `POLL_INTERVAL_MINUTES`
 
 Controls how often the bot checks SIMKL for new activity.
@@ -704,7 +691,7 @@ Make sure the bot was invited with:
 - `bot`
 - `applications.commands`
 
-If you use `GUILD_ID`, verify that the server ID is correct and restart the bot.
+Slash commands are synchronized globally, so newly added or changed commands may take some time to appear. Make sure the bot was invited with the `applications.commands` scope.
 
 ## Bot is online but does not post activity
 
