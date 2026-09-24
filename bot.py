@@ -183,10 +183,33 @@ async def call_refresh(uid,u,token,fn,*a,**kw):
     except SimklAuthError:
         token=await refresh_user_token(uid,u); return await fn(token,*a,**kw),token
 
-async def seed_history(g,uid,u,token):
+async def cached_simkl_items(uid,u,token,t,date_from=None,request_cache=None,timeout=None):
+    if request_cache is None:
+        return await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=date_from,timeout=timeout)
+
+    key=("all-items",uid,t,date_from,timeout)
+    cached=request_cache.get(key)
+    if cached is not None:
+        return cached
+
+    result=await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=date_from,timeout=timeout)
+    request_cache[key]=result
+    return result
+
+async def cached_simkl_activities(uid,u,token,request_cache):
+    key=("activities",uid)
+    cached=request_cache.get(key)
+    if cached is not None:
+        return cached
+
+    result=await call_refresh(uid,u,token,simkl.get_activities)
+    request_cache[key]=result
+    return result
+
+async def seed_history(g,uid,u,token,request_cache=None):
     last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}
     for t in MEDIA_TYPES:
-        since=parse_iso(last.get(t,EPOCH_ISO)); items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
+        since=parse_iso(last.get(t,EPOCH_ISO)); items,token=await cached_simkl_items(uid,u,token,t,request_cache=request_cache,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
         if t=="movies":
             for x in items or []:
                 m=x.get("movie") or {}; sid=(m.get("ids") or {}).get("simkl"); wr=x.get("last_watched_at")
@@ -287,7 +310,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
     if pending and ok: await storage.update_activity_state(g,uid,statuses=pending,statuses_seeded=True)
     return count,ok
 
-async def poll_one(ch,g,uid,u,gu):
+async def poll_one(ch,g,uid,u,gu,request_cache=None):
     await storage.update_poll_health(g,uid,last_poll_at=now_iso())
     token=await valid_token(uid,u)
     member,name=await resolve_member(g,uid)
@@ -297,7 +320,7 @@ async def poll_one(ch,g,uid,u,gu):
         log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
         return 0
     try:
-        activities,token=await call_refresh(uid,u,token,simkl.get_activities)
+        activities,token=await cached_simkl_activities(uid,u,token,request_cache or {})
     except Exception as exc:
         error=f"activity fetch: {type(exc).__name__}: {exc}"
         await storage.update_poll_health(g,uid,last_error=error)
@@ -305,7 +328,7 @@ async def poll_one(ch,g,uid,u,gu):
         return 0
     if not gu.get("history_seeded"):
         try:
-            token=await seed_history(g,uid,u,token)
+            token=await seed_history(g,uid,u,token,request_cache)
             gu["history_seeded"]=True
         except Exception as exc:
             error=f"history seed: {type(exc).__name__}: {exc}"
@@ -335,7 +358,7 @@ async def poll_one(ch,g,uid,u,gu):
         if not stamp or parse_iso(stamp)<=sdt:
             continue
         try:
-            items,token=await call_refresh(uid,u,token,simkl.get_all_items,t,date_from=since)
+            items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
             sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
             wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
             if so and wo:
@@ -358,9 +381,19 @@ async def poll_all(g=None):
     async with poll_lock:
         targets=await storage.get_poll_targets(g)
         posted=0
+        request_cache={}
+        shared_users={}
+
+        # A Discord user has one SIMKL account, even when linked to multiple
+        # servers. Reuse the same in-memory user record and SIMKL responses
+        # during this polling cycle so identical API work is only performed
+        # once per account.
         for x in targets:
-            gid=x["guild_id"]
             uid=x["discord_user_id"]
+            shared_user=shared_users.setdefault(uid,x["user_data"])
+            x["user_data"]=shared_user
+
+            gid=x["guild_id"]
             ch=bot.get_channel(int(x["channel_id"]))
             if ch is None:
                 try:
@@ -369,7 +402,7 @@ async def poll_all(g=None):
                     await storage.update_poll_health(gid,uid,last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}")
                     log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
                     continue
-            try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"])
+            try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"],request_cache)
             except SimklAuthError:
                 await storage.update_poll_health(x["guild_id"],x["discord_user_id"],last_error="SIMKL authentication failed")
                 log.warning("Auth failed for %s.",x["discord_user_id"])
