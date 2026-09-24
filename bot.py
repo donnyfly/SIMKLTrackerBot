@@ -274,18 +274,24 @@ async def poll_one(ch,g,uid,u,gu):
     token=await valid_token(uid,u)
     member,name=await resolve_member(g,uid)
     if not member:
+        error=f"Discord member {uid} is no longer in guild {g}"
+        await storage.update_poll_health(g,uid,last_error=error)
         log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
         return 0
     try:
         activities,token=await call_refresh(uid,u,token,simkl.get_activities)
-    except Exception:
+    except Exception as exc:
+        error=f"activity fetch: {type(exc).__name__}: {exc}"
+        await storage.update_poll_health(g,uid,last_error=error)
         log.exception("Failed to get SIMKL activity timestamps for user %s.",uid)
         return 0
     if not gu.get("history_seeded"):
         try:
             token=await seed_history(g,uid,u,token)
             gu["history_seeded"]=True
-        except Exception:
+        except Exception as exc:
+            error=f"history seed: {type(exc).__name__}: {exc}"
+            await storage.update_poll_health(g,uid,last_error=error)
             log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
             return 0
     if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
@@ -334,11 +340,21 @@ async def poll_all(g=None):
     targets=await storage.get_poll_targets(g)
     posted=0
     for x in targets:
+        gid=x["guild_id"]
+        uid=x["discord_user_id"]
         ch=bot.get_channel(int(x["channel_id"]))
         if ch is None:
-            try: ch=await bot.fetch_channel(int(x["channel_id"]))
-            except Exception: continue
-        try: posted+=await poll_one(ch,int(x["guild_id"]),x["discord_user_id"],x["user_data"],x["guild_user_data"])
+            try:
+                ch=await bot.fetch_channel(int(x["channel_id"]))
+            except Exception as exc:
+                await storage.update_poll_health(
+                    gid,
+                    uid,
+                    last_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}",
+                )
+                log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
+                continue
+        try: posted+=await poll_one(ch,int(gid),uid,x["user_data"],x["guild_user_data"])
         except SimklAuthError:
             await storage.update_poll_health(
                 x["guild_id"],
@@ -480,6 +496,9 @@ async def simkl_checknow(i):
         poll_lock.release()
     await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
+POLL_RETRY_DELAY_SECONDS=60
+POLL_MAX_RETRY_DELAY_SECONDS=600
+
 poll_task_started=False
 @bot.event
 async def on_ready():
@@ -492,9 +511,15 @@ async def on_ready():
 
 async def polling_loop():
     await bot.wait_until_ready()
+    retry_delay=POLL_RETRY_DELAY_SECONDS
     while not bot.is_closed():
-        try: await poll_all()
-        except Exception: log.exception("Polling cycle failed.")
-        await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
+        try:
+            await poll_all()
+            retry_delay=POLL_RETRY_DELAY_SECONDS
+            await asyncio.sleep(POLL_INTERVAL_MINUTES*60)
+        except Exception:
+            log.exception("Polling cycle failed; retrying sooner instead of waiting for the full interval.")
+            await asyncio.sleep(retry_delay)
+            retry_delay=min(retry_delay*2,POLL_MAX_RETRY_DELAY_SECONDS)
 
 if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN)
