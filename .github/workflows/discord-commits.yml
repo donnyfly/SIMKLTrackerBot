@@ -85,8 +85,8 @@ jobs:
           for commit in commits:
               sha = commit["sha"][:7]
               url = f"{repo_url}/commit/{commit['sha']}"
-              message = commit["commit"]["message"].split("\\n")[0]
-              commit_lines.append(f"[{sha}]({url}) — {message}")
+              message = commit["commit"]["message"].split("\n")[0]
+              commit_lines.append(f"[`{sha}`]({url}) — {message}")
 
           count = len(commits)
           title = f"[{repo_name}:main] {count} new commit{'s' if count != 1 else ''}"
@@ -104,7 +104,7 @@ jobs:
               },
               "title": title,
               "url": compare_url,
-              "description": "\\n".join(commit_lines),
+              "description": "\n".join(commit_lines),
               "color": 5814783
           }
 
