@@ -108,6 +108,7 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("activity_state", {
         "statuses": {},
         "watch_times": {},
+        "statuses_seeded": False,
     })
     state = user["activity_state"]
     if not isinstance(state, dict):
@@ -115,6 +116,7 @@ def _normalise_user(user: dict) -> None:
         user["activity_state"] = state
     state.setdefault("statuses", {})
     state.setdefault("watch_times", {})
+    state.setdefault("statuses_seeded", False)
 
     user.setdefault("last_checked", {})
     for media_type in ("shows", "movies", "anime"):
@@ -293,6 +295,7 @@ class Storage:
         discord_user_id: str,
         statuses: dict | None = None,
         watch_times: dict | None = None,
+        statuses_seeded: bool | None = None,
     ) -> None:
         async with _lock:
             user = self._user(discord_user_id)
@@ -303,6 +306,8 @@ class Storage:
                 state["statuses"].update(statuses)
             if watch_times:
                 state["watch_times"].update(watch_times)
+            if statuses_seeded is not None:
+                state["statuses_seeded"] = statuses_seeded
             self._dirty = True
         await self.flush()
 
