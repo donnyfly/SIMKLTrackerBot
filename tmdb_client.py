@@ -518,6 +518,41 @@ class TmdbClient:
         return data
 
     # ------------------------------------------------------------------
+    # TV backdrops
+    # ------------------------------------------------------------------
+
+    async def get_tv_backdrop(self, series_id) -> str | None:
+        try:
+            series_id = int(series_id)
+        except (TypeError, ValueError):
+            return None
+        if series_id in self._tv_backdrop_cache:
+            return self._tv_backdrop_cache[series_id]
+        data = await self._get_json(
+            f"{API_BASE}/tv/{series_id}/images",
+            {"include_image_language": "en,null"},
+        )
+        if not data:
+            self._tv_backdrop_cache[series_id] = None
+            return None
+        backdrops = data.get("backdrops") or []
+        if not backdrops:
+            self._tv_backdrop_cache[series_id] = None
+            return None
+        backdrops = sorted(
+            backdrops,
+            key=lambda image: (
+                image.get("vote_average", 0),
+                image.get("vote_count", 0),
+            ),
+            reverse=True,
+        )
+        path = backdrops[0].get("file_path")
+        result = f"{IMAGE_BASE}{path}" if path else None
+        self._tv_backdrop_cache[series_id] = result
+        return result
+
+    # ------------------------------------------------------------------
     # Movies
     # ------------------------------------------------------------------
 
