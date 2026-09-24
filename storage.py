@@ -32,6 +32,7 @@ def _default_data() -> dict:
     return {
         "channel_id": None,
         "poll_interval_minutes": DEFAULT_POLL_INTERVAL_MINUTES,
+        "server_embed_preferences": {"style": "rich", "artwork": "auto", "activity_text": "short"},
         "users": {},
     }
 
@@ -52,6 +53,12 @@ def _load_from_disk() -> dict:
 
     data.setdefault("channel_id", None)
     data.setdefault("poll_interval_minutes", DEFAULT_POLL_INTERVAL_MINUTES)
+    data.setdefault("server_embed_preferences", {"style": "rich", "artwork": "auto", "activity_text": "short"})
+    if not isinstance(data["server_embed_preferences"], dict):
+        data["server_embed_preferences"] = {"style": "rich", "artwork": "auto", "activity_text": "short"}
+    data["server_embed_preferences"].setdefault("style", "rich")
+    data["server_embed_preferences"].setdefault("artwork", "auto")
+    data["server_embed_preferences"].setdefault("activity_text", "short")
     data.setdefault("users", {})
 
     if not isinstance(data["users"], dict):
@@ -104,6 +111,7 @@ def _normalise_user(user: dict) -> None:
     prefs.setdefault("style", "rich")
     prefs.setdefault("artwork", "auto")
     prefs.setdefault("activity_text", "short")
+    user.setdefault("embed_preferences_custom", prefs != {"style": "rich", "artwork": "auto", "activity_text": "short"})
 
     user.setdefault("activity_state", {
         "statuses": {},
@@ -255,11 +263,33 @@ class Storage:
             self._dirty = True
         await self.flush()
 
+    async def get_server_embed_preferences(self) -> dict:
+        async with _lock:
+            return copy.deepcopy(self._data["server_embed_preferences"])
+
+    async def set_server_embed_preferences(
+        self,
+        style: str | None = None,
+        artwork: str | None = None,
+        activity_text: str | None = None,
+    ) -> None:
+        async with _lock:
+            prefs = self._data["server_embed_preferences"]
+            if style is not None:
+                prefs["style"] = style
+            if artwork is not None:
+                prefs["artwork"] = artwork
+            if activity_text is not None:
+                prefs["activity_text"] = activity_text
+            self._dirty = True
+        await self.flush()
+
     async def get_embed_preferences(self, discord_user_id: str) -> dict:
         async with _lock:
             user = self._user(discord_user_id)
-            if not user:
-                return {"style": "rich", "artwork": "auto", "activity_text": "short"}
+            server = copy.deepcopy(self._data["server_embed_preferences"])
+            if not user or not user.get("embed_preferences_custom", False):
+                return server
             return copy.deepcopy(user["embed_preferences"])
 
     async def set_embed_preferences(
@@ -280,6 +310,16 @@ class Storage:
                 prefs["artwork"] = artwork
             if activity_text is not None:
                 prefs["activity_text"] = activity_text
+            user["embed_preferences_custom"] = True
+            self._dirty = True
+        await self.flush()
+
+    async def reset_embed_preferences(self, discord_user_id: str) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            user["embed_preferences_custom"] = False
             self._dirty = True
         await self.flush()
 
