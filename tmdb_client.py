@@ -67,8 +67,13 @@ class TmdbClient:
             dict | None,
         ] = {}
 
-        # Cache English-localized anime title lookups.
+        # Cache English-localized title lookups.
         self._tv_title_cache: dict[
+            tuple[int, bool],
+            str | None,
+        ] = {}
+
+        self._movie_title_cache: dict[
             tuple[int, bool],
             str | None,
         ] = {}
@@ -951,6 +956,97 @@ class TmdbClient:
 
         result = str(title) if title else None
         self._tv_title_cache[cache_key] = result
+        return result
+
+    # ------------------------------------------------------------------
+    # Movie title
+    # ------------------------------------------------------------------
+
+    async def get_movie_title(
+        self,
+        movie_id,
+        prefer_english: bool = False,
+    ) -> str | None:
+        """Return the movie title, optionally preferring an English translation."""
+
+        try:
+            movie_id = int(movie_id)
+        except (TypeError, ValueError):
+            return None
+
+        cache_key = (movie_id, bool(prefer_english))
+        if cache_key in self._movie_title_cache:
+            return self._movie_title_cache[cache_key]
+
+        data = await self._get_json(
+            f"{API_BASE}/movie/{movie_id}",
+            {
+                "language": "en-US",
+            },
+        )
+        if not data:
+            self._movie_title_cache[cache_key] = None
+            return None
+
+        title = data.get("title")
+        original_title = data.get("original_title")
+
+        if prefer_english:
+            translations = await self._get_json(
+                f"{API_BASE}/movie/{movie_id}/translations",
+            )
+            english_titles = []
+            if translations:
+                for translation in translations.get("translations") or []:
+                    if translation.get("iso_639_1") != "en":
+                        continue
+                    translated_title = (
+                        (translation.get("data") or {}).get("title")
+                    )
+                    if translated_title:
+                        english_titles.append(
+                            (
+                                translation.get("iso_3166_1") == "US",
+                                str(translated_title).strip(),
+                            )
+                        )
+
+            for is_us, translated_title in sorted(
+                english_titles,
+                key=lambda item: not item[0],
+            ):
+                if (
+                    translated_title
+                    and translated_title.casefold()
+                    != str(original_title or "").strip().casefold()
+                ):
+                    title = translated_title
+                    break
+
+            query = original_title or title
+            if query:
+                search = await self._get_json(
+                    f"{API_BASE}/search/movie",
+                    {
+                        "query": query,
+                        "language": "en-US",
+                        "include_adult": "false",
+                    },
+                )
+                results = search.get("results") if search else None
+                matching = next(
+                    (
+                        result
+                        for result in (results or [])
+                        if result.get("id") == movie_id
+                    ),
+                    None,
+                )
+                if matching and matching.get("title"):
+                    title = str(matching["title"]).strip()
+
+        result = str(title) if title else None
+        self._movie_title_cache[cache_key] = result
         return result
 
     # ------------------------------------------------------------------
