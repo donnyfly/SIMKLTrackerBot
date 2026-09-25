@@ -522,13 +522,22 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                     title,
                     exc_info=True,
                 )
-        imdb_rating = await get_imdb_rating("movie", ids.get("tmdb")) if p.get("show_imdb", True) else None
+        ratings = None
+        if ids.get("tmdb") is not None and (
+            p.get("show_imdb", True)
+            or (anime_movie and p.get("show_mal", True))
+        ):
+            ratings = await get_movie_ratings(ids.get("tmdb"))
+
         verb="rewatched" if rw else "watched a movie"
         desc=f"{verb}"
         if p["activity_text"]=="detailed":
             desc=f"{verb} **{title}**"
-        if imdb_rating is not None:
-            desc += f"\n⭐ IMDb {imdb_rating:.1f}/10"
+        if ratings:
+            if p.get("show_imdb", True) and ratings.get("imdb") is not None:
+                desc += f"\n⭐ IMDb {ratings['imdb']:.1f}/10"
+            if anime_movie and p.get("show_mal", True) and ratings.get("mal") is not None:
+                desc += f"\n🌸 MAL {ratings['mal']:.2f}/10"
         logo=None
         if ids.get("tmdb") is not None and p["artwork"] in ("auto", "backdrop"):
             try:
