@@ -499,8 +499,8 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 image,ep_title,episode_imdb_id=None,grp[0].get("episode_title"),None
             label=format_episode_display(sn,grp[0]["episode_number"],grp[-1]["episode_number"],p.get("episode_code", False)); verb=kind.capitalize()
             rating = await imdb.get_rating(episode_imdb_id) if len(grp) == 1 and p.get("show_imdb", True) else None
-            desc=f"{verb} `{label}`"
-            if p["activity_text"]=="detailed": desc=f"{verb} `{label}` of **{title}**"
+            desc=f"{verb} {label}"
+            if p["activity_text"]=="detailed": desc=f"{verb} {label} of **{title}**"
             if len(grp)==1:
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
