@@ -37,12 +37,19 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 - 🏠 Supports multiple Discord servers
 - 💾 Stores data locally in `data/store.json`
 - 🐳 Docker support with a pre-built image
+- 📊 Personal and server watch statistics
+- 🔥 Watch streak tracking
+- 🏆 Server watch leaderboards
 - 🛠️ Administrator tools for configuration and manual checks
 
 ## Commands
 
 | Command | Permission | What it does |
 | --- | --- | --- |
+| `/simkl-stats` | Everyone | View watch statistics for yourself or another server member |
+| `/simkl-streak` | Everyone | View your current and longest watch streak |
+| `/simkl-leaderboard` | Everyone | View the server watch leaderboard |
+| `/simkl-community` | Everyone | View combined server watch statistics |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
 | `/simkl-style` | Everyone | Set your personal embed, artwork, and text preferences |
@@ -53,7 +60,20 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
-### Rating customization
+### Watch statistics
+
+The bot keeps per-server watch statistics locally in `data/store.json`. Statistics are updated when activity is successfully processed and are seeded from existing watch history when a user first links their SIMKL account.
+
+Available commands:
+
+- `/simkl-stats` — View episode, movie, anime, and streak statistics. You can optionally select another server member.
+- `/simkl-streak` — View current and longest watch streaks.
+- `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, or anime.
+- `/simkl-community` — View combined watch statistics for the server.
+
+Statistics are local and do not require additional SIMKL API requests after the activity data has already been retrieved for normal polling.
+
+## Rating customization
 
 Ratings can be controlled with `/simkl-ratings`.
 
