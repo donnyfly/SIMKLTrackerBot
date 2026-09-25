@@ -1232,6 +1232,44 @@ class TmdbClient:
         return results if isinstance(results,list) else []
 
     # ------------------------------------------------------------------
+    # Movie search
+    # ------------------------------------------------------------------
+
+    async def find_movie_by_title(self, title: str) -> dict | None:
+        """Find a TMDB movie by title using the English-localized search."""
+        if not title:
+            return None
+
+        query = str(title).strip()
+        if not query:
+            return None
+
+        data = await self._get_json(
+            f"{API_BASE}/search/movie",
+            {
+                "query": query,
+                "language": "en-US",
+                "include_adult": "false",
+            },
+        )
+        results = (data or {}).get("results") if isinstance(data, dict) else None
+        if not results:
+            return None
+
+        result = results[0]
+        movie_id = result.get("id")
+        try:
+            movie_id = int(movie_id)
+        except (TypeError, ValueError):
+            return None
+
+        return {
+            "id": movie_id,
+            "title": result.get("title"),
+            "original_title": result.get("original_title"),
+        }
+
+    # ------------------------------------------------------------------
     # Movies
     # ------------------------------------------------------------------
 
