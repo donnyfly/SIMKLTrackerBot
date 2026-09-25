@@ -604,8 +604,8 @@ class Storage:
                     if watched_dt.tzinfo is None:
                         watched_dt = watched_dt.replace(tzinfo=timezone.utc)
                     guild = self._guild(guild_id, create=True)
-                     timezone_name = guild.get("timezone")
-                     day = watched_dt.astimezone(_resolve_timezone(timezone_name)).date().isoformat()
+                    timezone_name = guild.get("timezone")
+                    day = watched_dt.astimezone(_resolve_timezone(timezone_name)).date().isoformat()
                 except (TypeError, ValueError):
                     day = watched_at[:10]
             if day:
