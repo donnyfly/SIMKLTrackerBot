@@ -45,6 +45,7 @@ DEFAULT_EMBED_PREFERENCES = {
     "activity_text": "short",
     "show_imdb": True,
     "show_mal": True,
+    "episode_code": True,
 }
 
 
@@ -166,6 +167,7 @@ def _normalise_user(user: dict) -> None:
     prefs.setdefault("activity_text", "short")
     prefs.setdefault("show_imdb", True)
     prefs.setdefault("show_mal", True)
+    prefs.setdefault("episode_code", True)
     user.setdefault(
         "embed_preferences_custom",
         prefs != DEFAULT_EMBED_PREFERENCES,
@@ -242,6 +244,7 @@ def _normalise_guild(guild: dict) -> None:
     guild["embed_preferences"].setdefault("activity_text", "short")
     guild["embed_preferences"].setdefault("show_imdb", True)
     guild["embed_preferences"].setdefault("show_mal", True)
+    guild["embed_preferences"].setdefault("episode_code", True)
     guild.setdefault("users", {})
     if not isinstance(guild["users"], dict):
         guild["users"] = {}
@@ -476,7 +479,7 @@ class Storage:
             guild = self._guild(guild_id, create=True)
             return copy.deepcopy(guild["embed_preferences"])
 
-    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None, force_override=None) -> None:
+    async def set_server_embed_preferences(self, guild_id: int | str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None, episode_code=None, force_override=None) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             guild = self._guild(guild_id, create=True)
@@ -491,6 +494,8 @@ class Storage:
                 prefs["show_imdb"] = bool(show_imdb)
             if show_mal is not None:
                 prefs["show_mal"] = bool(show_mal)
+            if episode_code is not None:
+                prefs["episode_code"] = bool(episode_code)
             if force_override is not None:
                 guild["force_embed_preferences"] = bool(force_override)
             self._dirty = True
@@ -513,7 +518,7 @@ class Storage:
                 return copy.deepcopy(user["embed_preferences"])
             return copy.deepcopy(guild["embed_preferences"])
 
-    async def set_embed_preferences(self, discord_user_id: str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None) -> None:
+    async def set_embed_preferences(self, discord_user_id: str, style=None, artwork=None, activity_text=None, show_imdb=None, show_mal=None, episode_code=None) -> None:
         async with _lock:
             user = self._user(discord_user_id)
             if not user:
@@ -529,6 +534,8 @@ class Storage:
                 prefs["show_imdb"] = bool(show_imdb)
             if show_mal is not None:
                 prefs["show_mal"] = bool(show_mal)
+            if episode_code is not None:
+                prefs["episode_code"] = bool(episode_code)
             user["embed_preferences_custom"] = True
             self._dirty = True
         await self.flush()
