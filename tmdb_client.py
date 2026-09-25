@@ -578,43 +578,20 @@ class TmdbClient:
             return self._anime_episode_cache[cache_key]
 
         # --------------------------------------------------------------
-        # First try the known season numbers.
-        # --------------------------------------------------------------
-
-        for current_series_id in candidate_series_ids:
-            for season_number in candidates:
-                episode = await self.get_episode_details(
-                    current_series_id,
-                    season_number,
-                    episode_number,
-                )
-
-                if not episode:
-                    continue
-
-                # When we have a known TMDB series and season number,
-                # the season + episode numbers are the authoritative match.
-                # SIMKL/ANIDB episode titles can differ in language or can be
-                # stale, so never reject a direct season/episode match because
-                # the title text differs.
-                result = {
-                    "series_id": current_series_id,
-                    "season_number": season_number,
-                    "episode_number": episode_number,
-                    "episode": episode,
-                }
-                self._anime_episode_cache[cache_key] = result
-                return result
-
-        # --------------------------------------------------------------
-        # TVMaze fallback:
-        #
-        # TMDB can lag behind TVDB for newly released anime seasons.
-        # TVMaze can resolve the same TVDB series and exact season/episode,
-        # including an episode-level IMDb ID.
+        # TVMaze is the authoritative anime episode source when a TVDB ID
+        # is available. SIMKL/Kitsu-style anime seasons align with TVDB much
+        # more reliably than TMDB's canonical anime TV-series records.
+        # Check TVMaze first so a TMDB season-1 record can never win for a
+        # later anime season.
         # --------------------------------------------------------------
 
         if tvdb_id:
+            log.info(
+                "Trying TVMaze anime episode: TVDB=%s candidates=%s E%02d.",
+                tvdb_id,
+                candidates,
+                episode_number,
+            )
             for season_number in candidates:
                 episode = await self.get_tvmaze_episode(
                     tvdb_id,
@@ -650,6 +627,35 @@ class TmdbClient:
                     season_number,
                     episode_number,
                 )
+                return result
+
+        # --------------------------------------------------------------
+        # TMDB fallback for exact season/episode only.
+        # --------------------------------------------------------------
+
+        for current_series_id in candidate_series_ids:
+            for season_number in candidates:
+                episode = await self.get_episode_details(
+                    current_series_id,
+                    season_number,
+                    episode_number,
+                )
+
+                if not episode:
+                    continue
+
+                # When we have a known TMDB series and season number,
+                # the season + episode numbers are the authoritative match.
+                # SIMKL/ANIDB episode titles can differ in language or can be
+                # stale, so never reject a direct season/episode match because
+                # the title text differs.
+                result = {
+                    "series_id": current_series_id,
+                    "season_number": season_number,
+                    "episode_number": episode_number,
+                    "episode": episode,
+                }
+                self._anime_episode_cache[cache_key] = result
                 return result
 
         # Do not search arbitrary TMDB seasons here. If the exact season/episode
