@@ -1192,23 +1192,140 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
     await i.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="simkl-community",description="Show this server's combined SIMKL watch statistics.")
-async def simkl_community(i):
+def build_server_stats(rows, guild_name):
+    linked=len(rows)
+    episodes=0
+    movies=0
+    anime_episodes=0
+    anime_movies=0
+    active_days=set()
+    total_watchers=[]
+    title_totals={}
+
+    for row in rows:
+        stats=row["statistics"]
+        user_total=int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))
+        episodes += int(stats.get("episodes_watched",0))
+        movies += int(stats.get("movies_watched",0))
+        anime_episodes += int(stats.get("anime_episodes_watched",0))
+        anime_movies += int(stats.get("anime_movies_watched",0))
+        active_days.update((stats.get("watch_dates") or {}).keys())
+
+        if user_total:
+            total_watchers.append((user_total,row["discord_user_id"]))
+
+        for key,record in (stats.get("titles") or {}).items():
+            if not isinstance(record,dict):
+                continue
+            count=int(record.get("count",0))
+            if count <= 0:
+                continue
+            existing=title_totals.get(key)
+            if existing is None:
+                title_totals[key]={
+                    "title": record.get("title") or "Untitled",
+                    "type": record.get("type") or "watch",
+                    "count": count,
+                }
+            else:
+                existing["count"] += count
+
+    total_watches=episodes + movies
+    total_watchers.sort(key=lambda value:(-value[0],value[1]))
+    top_titles=sorted(
+        title_totals.values(),
+        key=lambda value:(-value["count"],value["title"].lower()),
+    )
+
+    description=(
+        f"👥 **{linked:,}** tracked users\n"
+        f"👀 **{total_watches:,}** total watches\n"
+        f"📺 **{episodes:,}** episodes\n"
+        f"🎬 **{movies:,}** movies\n"
+        f"🌸 **{anime_episodes:,}** anime episodes\n"
+        f"🎞️ **{anime_movies:,}** anime movies\n"
+        f"📅 **{len(active_days):,}** active watch days"
+    )
+
+    embed=discord.Embed(
+        title=f"📊 {guild_name} · Server Statistics",
+        description=description,
+        color=0x5865F2,
+    )
+
+    if total_watchers:
+        uid=total_watchers[0][1]
+        embed.add_field(
+            name="🔥 Most Active Watcher",
+            value=f"<@{uid}> — **{total_watchers[0][0]:,}** watches",
+            inline=True,
+        )
+
+    if top_titles:
+        top=top_titles[0]
+        type_emoji={
+            "episode":"📺",
+            "anime_episode":"🌸",
+            "movie":"🎬",
+            "anime_movie":"🎞️",
+        }.get(top["type"],"🎬")
+        embed.add_field(
+            name="🏆 Most Watched Title",
+            value=f"{type_emoji} **{top['title']}** — **{top['count']:,}**",
+            inline=True,
+        )
+
+    if total_watches:
+        episode_share=(episodes / total_watches) * 100
+        movie_share=(movies / total_watches) * 100
+        embed.add_field(
+            name="🍿 Watch Breakdown",
+            value=f"📺 Episodes: **{episode_share:.1f}%**\n🎬 Movies: **{movie_share:.1f}%**",
+            inline=True,
+        )
+
+    if len(top_titles) > 1:
+        lines=[]
+        for index,top in enumerate(top_titles[:5],1):
+            lines.append(f"**{index}.** {top['title']} — **{top['count']:,}**")
+        embed.add_field(
+            name="🎞️ Top 5 Titles",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    embed.set_footer(text="All-time statistics · Server-wide")
+    return embed
+
+
+@bot.tree.command(name="simkl-server-stats",description="Show this server's combined SIMKL watch statistics.")
+async def simkl_server_stats(i):
     g=guild_id(i)
     if not g:
         await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     rows=await storage.get_guild_statistics(g)
-    linked=len(rows)
-    episodes=sum(int(r["statistics"].get("episodes_watched",0)) for r in rows)
-    movies=sum(int(r["statistics"].get("movies_watched",0)) for r in rows)
-    anime_episodes=sum(int(r["statistics"].get("anime_episodes_watched",0)) for r in rows)
-    anime_movies=sum(int(r["statistics"].get("anime_movies_watched",0)) for r in rows)
-    active_days=set()
-    for row in rows:
-        active_days.update((row["statistics"].get("watch_dates") or {}).keys())
-    embed=discord.Embed(title=f"📊 {i.guild.name} · Community Stats",description=f"👥 Tracked users: **{linked}**\n📺 Episodes watched: **{episodes:,}**\n🎬 Movies watched: **{movies:,}**\n🌸 Anime episodes: **{anime_episodes:,}**\n🎞️ Anime movies: **{anime_movies:,}**\n📅 Active watch days: **{len(active_days):,}**",color=0x5865F2)
-    embed.set_footer(text="All-time statistics · Server-wide")
-    await i.response.send_message(embed=embed)
+    if not any(
+        int(row["statistics"].get("episodes_watched",0)) + int(row["statistics"].get("movies_watched",0))
+        for row in rows
+    ):
+        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True)
+        return
+    await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
+
+
+@bot.tree.command(name="simkl-community",description="Show this server's combined SIMKL watch statistics.")
+async def simkl_community(i):
+    # Keep the original command as a backwards-compatible alias.
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    rows=await storage.get_guild_statistics(g)
+    if not any(
+        int(row["statistics"].get("episodes_watched",0)) + int(row["statistics"].get("movies_watched",0))
+        for row in rows
+    ):
+        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True); return
+    await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
 
 
 
