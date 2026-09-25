@@ -1856,7 +1856,10 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
                 mal_rating=ratings.get("myanimelist")
                 if mal_rating is not None:
                     rating_parts.append(f"🌸 MAL **{mal_rating:.1f}**")
-            rating_text=f" · {' · '.join(rating_parts)}" if rating_parts else ""
+            rating_text=""
+            if rating_parts:
+                code_fence="`" * 3
+                rating_text="\n" + code_fence + "\n" + " · ".join(rating_parts) + "\n" + code_fence
             source_count=int(result.get("_sources",1))
             reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
             release_date=result.get("first_air_date") or result.get("release_date") or ""
