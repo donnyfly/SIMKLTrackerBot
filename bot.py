@@ -138,7 +138,15 @@ def group_consecutive(es):
 
 async def episode_media(t,e):
     candidates=[]
-    for v in (e.get("season_num"),e.get("mapped_tvdb_season_num"),e.get("original_season_num")):
+    # For anime, mapped TVDB season numbering is authoritative. SIMKL stores
+    # seasonal anime as separate entries, so original_season_num is often 1
+    # even when the real TV season is S02/S03/S04. Falling back to that 1
+    # causes the canonical TMDB series to return the wrong S01 episode.
+    if t=="anime" and e.get("mapped_tvdb_season_num") is not None:
+        values=(e.get("season_num"),e.get("mapped_tvdb_season_num"))
+    else:
+        values=(e.get("season_num"),e.get("mapped_tvdb_season_num"),e.get("original_season_num"))
+    for v in values:
         try: v=int(v)
         except (TypeError,ValueError): continue
         if v not in candidates: candidates.append(v)
@@ -305,6 +313,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                     "tmdb": es[0].get("tmdb_id"),
                     "tvdb": es[0].get("tvdb_id"),
                 })
+                english_title=None
                 if anime_tmdb_id is not None:
                     english_title=await tmdb.get_tv_title(
                         anime_tmdb_id,
@@ -419,6 +428,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         if t=="anime":
             try:
                 anime_tmdb_id=await resolve_anime_tmdb_id(ids)
+                english_title=None
                 if anime_tmdb_id is not None:
                     english_title=await tmdb.get_tv_title(
                         anime_tmdb_id,
