@@ -2,6 +2,7 @@ import asyncio, logging, os, random, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.parse import urlencode
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -107,6 +108,18 @@ def account_id_from_settings(s): return (s.get("account") or {}).get("id") if is
 def simkl_title_url(t,i,slug=None):
     b={"movies":"https://simkl.com/movies","anime":"https://simkl.com/anime"}.get(t,"https://simkl.com/tv")
     return f"{b}/{i}/{slug}" if slug else f"{b}/{i}"
+
+def simkl_redirect_url(tmdb_id,kind,title=None,year=None):
+    """Build a direct Simkl redirect URL from a TMDB ID."""
+    params={"to":"Simkl","tmdb":int(tmdb_id),"type":"movie" if kind=="movie" else "show"}
+    if title:
+        params["title"]=str(title)
+    if year:
+        try:
+            params["year"]=int(year)
+        except (TypeError,ValueError):
+            pass
+    return "https://api.simkl.com/redirect?" + urlencode(params)
 def episode_key(t,i,s,e): return f"{t}:{i}:{s}:{e}"
 def movie_key(t,i): return f"{t}:{i}"
 
@@ -132,9 +145,10 @@ async def is_anime_movie_item(item):
         return True
 
     # Anime movies can arrive from /sync/all-items/anime as a show object
-    # with a TMDB ID and no season data. The same numeric TMDB ID can have
-    # separate TV/movie records, so checking only /movie/{id} can falsely
-    # classify a TV series as a movie. Check the TV record first.
+    # with a TMDB ID and no season data. Prefer the SIMKL season structure
+    # when it is present: watched TV anime entries have episode/season data,
+    # while anime movies do not. This also avoids TMDB ID collisions where
+    # /tv/{id} may resolve even though the SIMKL item is a movie.
     if item.get("seasons"):
         return False
 
@@ -143,10 +157,6 @@ async def is_anime_movie_item(item):
         return False
 
     try:
-        tv_title=await tmdb.get_tv_title(tmdb_id)
-        if tv_title:
-            return False
-
         movie_title=await tmdb.get_movie_title(tmdb_id)
     except Exception:
         log.warning(
@@ -164,6 +174,7 @@ async def is_anime_movie_item(item):
         )
         return True
 
+    # If there is no movie record, keep the item as a TV/anime series.
     return False
 
 
@@ -1720,6 +1731,7 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
             entry=candidates.get(key)
             if entry is None:
                 entry=dict(result)
+                entry["_recommendation_kind"]=kind
                 entry["_sources"]=1
             else:
                 entry["_sources"]+=1
@@ -1813,7 +1825,10 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
             rating_text=f" · ⭐ **{float(rating):.1f}**" if rating else ""
             source_count=int(result.get("_sources",1))
             reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
-            lines.append(f"**{index}.** {title}{rating_text} — {reason}")
+            release_date=result.get("first_air_date") or result.get("release_date") or ""
+            year=release_date[:4] if release_date else None
+            result_url=simkl_redirect_url(result.get("id"),"movie" if result.get("_recommendation_kind")=="movie" else "tv",title,year)
+            lines.append(f"**{index}.** [{title}]({result_url}){rating_text} — {reason}")
 
         embed=discord.Embed(
             title=f"🧠 {i.user.display_name} · Recommendations",
