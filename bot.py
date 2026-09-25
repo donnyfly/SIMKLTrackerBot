@@ -883,8 +883,7 @@ async def generate_weekly_recap(guild, period="current"):
     return build_weekly_recap(rows,start,end,guild.name,label)
 
 async def send_weekly_recap(guild, period="current"):
-    targets=await storage.get_poll_targets()
-    channel_id=next((x["channel_id"] for x in targets if int(x["guild_id"]) == int(guild.id)),None)
+    channel_id=await storage.get_channel(guild.id)
     if channel_id is None:
         return False
     channel=bot.get_channel(int(channel_id))
@@ -978,8 +977,7 @@ async def simkl_weekly_recap(i, period: app_commands.Choice[str] | None = None):
         return
     if not i.guild:
         return
-    targets=await storage.get_poll_targets()
-    channel_id=next((x["channel_id"] for x in targets if int(x["guild_id"]) == int(g)),None)
+    channel_id=await storage.get_channel(g)
     if channel_id is None:
         await i.response.send_message("No posting channel is configured for this server. Use `/simkl-setchannel` first.",ephemeral=True)
         return
