@@ -818,6 +818,101 @@ async def format_watch_stats(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
             f"🎞️ Anime movies: **{anime_movies:,}**\n"
             f"🔥 Current streak: **{current} day{'s' if current != 1 else ''}**\n"
             f"🏆 Longest streak: **{longest} day{'s' if longest != 1 else ''}**")
+def weekly_period(timezone_name, period="current"):
+    try:
+        tz=ZoneInfo(timezone_name)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        tz=ZoneInfo(DEFAULT_TIMEZONE_NAME)
+    today=datetime.now(tz).date()
+    monday=today-timedelta(days=today.weekday())
+    if period=="previous":
+        start=monday-timedelta(days=7)
+        end=monday-timedelta(days=1)
+    else:
+        start=monday
+        end=today
+    return start,end
+
+def build_weekly_recap(rows, start, end, guild_name, period_label):
+    totals={"total":0,"episodes":0,"movies":0,"anime_episodes":0,"anime_movies":0}
+    active_days=set()
+    user_rows=[]
+    for row in rows:
+        stats=row["statistics"]
+        weekly={"total":0,"episodes":0,"movies":0,"anime_episodes":0,"anime_movies":0}
+        for day, counts in (stats.get("watch_dates") or {}).items():
+            try:
+                date=datetime.strptime(day,"%Y-%m-%d").date()
+            except (TypeError,ValueError):
+                continue
+            if start <= date <= end:
+                active_days.add(day)
+                for key in weekly:
+                    weekly[key] += int(counts.get(key,0))
+        if weekly["total"]:
+            user_rows.append((weekly["total"],row["discord_user_id"]))
+            for key in totals:
+                totals[key] += weekly[key]
+    user_rows.sort(key=lambda x:(-x[0],x[1]))
+    description=(f"**{period_label}**\n"
+                 f"📺 Episodes: **{totals['episodes']:,}**\n"
+                 f"🎬 Movies: **{totals['movies']:,}**\n"
+                 f"🌸 Anime episodes: **{totals['anime_episodes']:,}**\n"
+                 f"🎞️ Anime movies: **{totals['anime_movies']:,}**\n"
+                 f"👀 Total watches: **{totals['total']:,}**\n"
+                 f"📅 Active days: **{len(active_days):,}**\n"
+                 f"👥 Active users: **{len(user_rows):,}**")
+    if user_rows:
+        lines=[]
+        medals=["🥇","🥈","🥉"]
+        for index,(total,uid) in enumerate(user_rows[:5]):
+            prefix=medals[index] if index<3 else f"**{index+1}.**"
+            lines.append(f"{prefix} <@{uid}> — **{total:,}** watch{'es' if total != 1 else ''}")
+        description += "\n\n**Top Watchers**\n" + "\n".join(lines)
+    else:
+        description += "\n\nNo watch activity was recorded during this period."
+    embed=discord.Embed(title=f"📅 {guild_name} · Weekly Recap",description=description,color=0x5865F2)
+    embed.set_footer(text=f"{start.isoformat()} → {end.isoformat()}")
+    return embed
+
+async def generate_weekly_recap(guild, period="current"):
+    timezone_info=await storage.get_timezone(guild.id)
+    start,end=weekly_period(timezone_info["name"],period)
+    rows=await storage.get_guild_statistics(guild.id)
+    label="Current week" if period=="current" else "Previous week"
+    return build_weekly_recap(rows,start,end,guild.name,label)
+
+async def send_weekly_recap(guild, period="current"):
+    targets=await storage.get_poll_targets()
+    channel_id=next((x["channel_id"] for x in targets if int(x["guild_id"]) == int(guild.id)),None)
+    if channel_id is None:
+        return False
+    channel=bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel=await bot.fetch_channel(int(channel_id))
+        except Exception:
+            return False
+    await channel.send(embed=await generate_weekly_recap(guild,period))
+    return True
+
+async def send_due_weekly_recaps():
+    for guild in bot.guilds:
+        try:
+            timezone_info=await storage.get_timezone(guild.id)
+            tz=ZoneInfo(timezone_info["name"])
+            now=datetime.now(tz)
+            if now.weekday() != 0 or now.hour < 9:
+                continue
+            previous_start,previous_end=weekly_period(timezone_info["name"],"previous")
+            week_key=previous_end.isoformat()
+            if await storage.get_weekly_recap_last_sent(guild.id) == week_key:
+                continue
+            if await send_weekly_recap(guild,"previous"):
+                await storage.set_weekly_recap_last_sent(guild.id,week_key)
+                log.info("Sent weekly recap for guild %s (%s to %s).",guild.id,previous_start,previous_end)
+        except Exception:
+            log.exception("Weekly recap failed for guild %s.",guild.id)
 
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster"),app_commands.Choice(name="Backdrop",value="backdrop")]
@@ -868,6 +963,37 @@ async def simkl_timezone(i, timezone: str | None = None):
         ephemeral=True,
     )
 
+WEEKLY_PERIOD_CHOICES=[
+    app_commands.Choice(name="Current week",value="current"),
+    app_commands.Choice(name="Previous week",value="previous"),
+]
+
+@bot.tree.command(name="simkl-weekly-recap",description="(Admin) Post a weekly SIMKL watch recap.")
+@app_commands.choices(period=WEEKLY_PERIOD_CHOICES)
+@app_commands.describe(period="Choose the week to generate; use this to test without waiting for the weekly schedule")
+async def simkl_weekly_recap(i, period: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i):
+        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
+        return
+    if not i.guild:
+        return
+    targets=await storage.get_poll_targets()
+    channel_id=next((x["channel_id"] for x in targets if int(x["guild_id"]) == int(g)),None)
+    if channel_id is None:
+        await i.response.send_message("No posting channel is configured for this server. Use `/simkl-setchannel` first.",ephemeral=True)
+        return
+    channel=bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel=await bot.fetch_channel(int(channel_id))
+        except Exception:
+            await i.response.send_message("The configured posting channel could not be accessed.",ephemeral=True)
+            return
+    selected=period.value if period else "current"
+    await i.response.defer(ephemeral=True)
+    await channel.send(embed=await generate_weekly_recap(i.guild,selected))
+    await i.followup.send(f"Posted the **{'current' if selected == 'current' else 'previous'} week** recap in {channel.mention}.",ephemeral=True)
 @bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
 @app_commands.describe(user="Optional server member to view")
 async def simkl_stats(i,user: discord.Member | None = None):
@@ -1185,6 +1311,7 @@ async def polling_loop():
     while not bot.is_closed():
         try:
             await poll_all()
+            await send_due_weekly_recaps()
             retry_delay=POLL_RETRY_DELAY_SECONDS
             next_run+=interval_seconds
             sleep_for=max(0,next_run-time.monotonic())
