@@ -444,28 +444,11 @@ class TmdbClient:
                 if not episode:
                     continue
 
-                # If SIMKL gave us an episode title, make sure the
-                # result isn't obviously a completely different episode.
-                if episode_title:
-                    tmdb_title = (
-                        episode.get("name") or ""
-                    ).strip().casefold()
-
-                    simkl_title = (
-                        str(episode_title)
-                        .strip()
-                        .casefold()
-                    )
-
-                    if (
-                        tmdb_title
-                        and simkl_title
-                        and tmdb_title != simkl_title
-                    ):
-                        # Keep searching. Anime databases can use
-                        # different numbering schemes.
-                        continue
-
+                # When we have a known TMDB series and season number,
+                # the season + episode numbers are the authoritative match.
+                # SIMKL/ANIDB episode titles can differ in language or can be
+                # stale, so never reject a direct season/episode match because
+                # the title text differs.
                 result = {
                     "series_id": current_series_id,
                     "season_number": season_number,
@@ -684,37 +667,32 @@ class TmdbClient:
                     title = translated_title
                     break
 
-            # Some anime have no useful English translation entry, but TMDB's
-            # search index can still know the English title as an alias.
-            if (
-                not title
-                or str(title).strip().casefold()
-                == str(original_title or "").strip().casefold()
-            ):
-                query = original_title or title
-                if query:
-                    search = await self._get_json(
-                        f"{API_BASE}/search/tv",
-                        {
-                            "query": query,
-                            "language": "en-US",
-                            "include_adult": False,
-                        },
-                    )
-                    results = search.get("results") if search else None
-                    if results:
-                        matching = next(
-                            (
-                                result
-                                for result in results
-                                if result.get("id") == series_id
-                            ),
-                            None,
-                        )
-                        candidate = matching or results[0]
-                        translated_title = candidate.get("name")
-                        if translated_title:
-                            title = translated_title
+            # TMDB's search endpoint searches original, translated and
+            # also-known-as names. Query it even when the details endpoint's
+            # current name differs from original_name: an anime can have a
+            # Romaji/localized primary name while still having an English
+            # search result for the same TMDB series.
+            query = original_title or title
+            if query:
+                search = await self._get_json(
+                    f"{API_BASE}/search/tv",
+                    {
+                        "query": query,
+                        "language": "en-US",
+                        "include_adult": False,
+                    },
+                )
+                results = search.get("results") if search else None
+                matching = next(
+                    (
+                        result
+                        for result in (results or [])
+                        if result.get("id") == series_id
+                    ),
+                    None,
+                )
+                if matching and matching.get("name"):
+                    title = str(matching["name"]).strip()
 
         result = str(title) if title else None
         self._tv_title_cache[cache_key] = result
