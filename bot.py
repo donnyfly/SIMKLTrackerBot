@@ -1,6 +1,7 @@
 import asyncio, logging, os, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID")
 TMDB_API_KEY=os.getenv("TMDB_API_KEY")
 MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY")
 POLL_INTERVAL_MINUTES=positive_int_env("POLL_INTERVAL_MINUTES", 60)
+STATISTICS_TIMEZONE=ZoneInfo("Asia/Singapore")
 POLL_CONCURRENCY=positive_int_env("POLL_CONCURRENCY", 5)
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
@@ -771,9 +773,12 @@ def calculate_streaks(watch_dates):
             continue
     if not dates:
         return 0,0
-    today=datetime.now(timezone.utc).date()
+    today=datetime.now(STATISTICS_TIMEZONE).date()
+    # Keep today's streak alive until the end of the local calendar day.
+    # If the user has not watched anything today yet, yesterday's streak
+    # remains active instead of resetting immediately at midnight.
     current=0
-    cursor=today
+    cursor=today if today in dates else today-timedelta(days=1)
     while cursor in dates:
         current+=1
         cursor-=timedelta(days=1)
