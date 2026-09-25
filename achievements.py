@@ -1,7 +1,7 @@
 """Achievement definitions for SIMKLTrackerBot.
 
-Achievements are data-driven so unlock logic can be implemented separately
-from the definitions and presented consistently in Discord.
+Achievements are intentionally challenging so higher tiers feel meaningful
+rather than being awarded for routine activity.
 """
 
 ACHIEVEMENTS = {
@@ -12,68 +12,124 @@ ACHIEVEMENTS = {
         "category": "total",
         "threshold": 1,
     },
-    "episode_10": {
-        "name": "Binge Starter",
+    "episodes_50": {
+        "name": "Seasoned Watcher",
         "emoji": "📺",
-        "description": "Watch 10 episodes.",
+        "description": "Watch 50 episodes.",
         "category": "episodes",
-        "threshold": 10,
+        "threshold": 50,
     },
-    "episode_100": {
-        "name": "Century Club",
-        "emoji": "💯",
-        "description": "Watch 100 episodes.",
+    "episodes_250": {
+        "name": "Binge Master",
+        "emoji": "📚",
+        "description": "Watch 250 episodes.",
         "category": "episodes",
-        "threshold": 100,
+        "threshold": 250,
     },
-    "episode_500": {
+    "episodes_1000": {
+        "name": "Episode Veteran",
+        "emoji": "🏅",
+        "description": "Watch 1,000 episodes.",
+        "category": "episodes",
+        "threshold": 1000,
+    },
+    "episodes_2500": {
         "name": "Episode Legend",
         "emoji": "👑",
-        "description": "Watch 500 episodes.",
+        "description": "Watch 2,500 episodes.",
         "category": "episodes",
-        "threshold": 500,
+        "threshold": 2500,
     },
-    "movie_10": {
-        "name": "Movie Night",
+    "movies_25": {
+        "name": "Movie Regular",
         "emoji": "🍿",
-        "description": "Watch 10 movies.",
-        "category": "movies",
-        "threshold": 10,
-    },
-    "movie_25": {
-        "name": "Movie Buff",
-        "emoji": "🎞️",
         "description": "Watch 25 movies.",
         "category": "movies",
         "threshold": 25,
     },
-    "anime_episode_100": {
-        "name": "Anime Addict",
-        "emoji": "🌸",
-        "description": "Watch 100 anime episodes.",
-        "category": "anime_episodes",
+    "movies_100": {
+        "name": "Movie Buff",
+        "emoji": "🎞️",
+        "description": "Watch 100 movies.",
+        "category": "movies",
         "threshold": 100,
     },
-    "anime_episode_500": {
+    "movies_250": {
+        "name": "Cinephile",
+        "emoji": "🎥",
+        "description": "Watch 250 movies.",
+        "category": "movies",
+        "threshold": 250,
+    },
+    "anime_250": {
+        "name": "Anime Devotee",
+        "emoji": "🌸",
+        "description": "Watch 250 anime episodes.",
+        "category": "anime_episodes",
+        "threshold": 250,
+    },
+    "anime_1000": {
         "name": "Anime Veteran",
         "emoji": "🌟",
-        "description": "Watch 500 anime episodes.",
+        "description": "Watch 1,000 anime episodes.",
         "category": "anime_episodes",
-        "threshold": 500,
+        "threshold": 1000,
     },
-    "watch_100": {
+    "anime_2500": {
+        "name": "Anime Legend",
+        "emoji": "💮",
+        "description": "Watch 2,500 anime episodes.",
+        "category": "anime_episodes",
+        "threshold": 2500,
+    },
+    "total_250": {
         "name": "Dedicated Watcher",
         "emoji": "🏆",
-        "description": "Watch 100 total items.",
+        "description": "Watch 250 total items.",
         "category": "total",
-        "threshold": 100,
+        "threshold": 250,
     },
-    "watch_500": {
+    "total_1000": {
+        "name": "Committed Watcher",
+        "emoji": "💎",
+        "description": "Watch 1,000 total items.",
+        "category": "total",
+        "threshold": 1000,
+    },
+    "total_2500": {
+        "name": "Elite Watcher",
+        "emoji": "🥇",
+        "description": "Watch 2,500 total items.",
+        "category": "total",
+        "threshold": 2500,
+    },
+    "total_5000": {
         "name": "Legendary",
         "emoji": "👑",
-        "description": "Watch 500 total items.",
+        "description": "Watch 5,000 total items.",
         "category": "total",
-        "threshold": 500,
+        "threshold": 5000,
+    },
+    "streak_30": {
+        "name": "Monthly Dedication",
+        "emoji": "🔥",
+        "description": "Maintain a 30-day watch streak.",
+        "category": "streak",
+        "threshold": 30,
+    },
+    "streak_100": {
+        "name": "Unstoppable",
+        "emoji": "⚡",
+        "description": "Maintain a 100-day watch streak.",
+        "category": "streak",
+        "threshold": 100,
+    },
+    "streak_365": {
+        "name": "Year-Round Watcher",
+        "emoji": "🌠",
+        "description": "Maintain a 365-day watch streak.",
+        "category": "streak",
+        "threshold": 365,
     },
 }
 
