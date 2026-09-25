@@ -1657,35 +1657,63 @@ async def _recommendation_sources(uid,user,token,media_filter):
 
 async def _get_recommendation_candidates(sources,excluded,media_filter):
     candidates={}
+    total_raw=0
+    total_excluded=0
+    total_filtered=0
+    total_invalid=0
+
     for source in sources:
         if source["kind"]=="movie":
-            results=await tmdb.get_movie_recommendations(source["tmdb_id"])
-            if not results:
-                results=await tmdb.get_movie_similar(source["tmdb_id"])
+            recommendation_results=await tmdb.get_movie_recommendations(source["tmdb_id"])
+            similar_results=await tmdb.get_movie_similar(source["tmdb_id"])
             kind="movie"
         else:
-            results=await tmdb.get_tv_recommendations(source["tmdb_id"])
-            if not results:
-                results=await tmdb.get_tv_similar(source["tmdb_id"])
+            recommendation_results=await tmdb.get_tv_recommendations(source["tmdb_id"])
+            similar_results=await tmdb.get_tv_similar(source["tmdb_id"])
             kind="tv"
 
+        # Keep both TMDB recommendation and similar-title results. A title can
+        # legitimately have recommendation results that are all already in the
+        # user's history, while /similar still has fresh candidates.
+        results=[]
+        seen_ids=set()
+        for result in (recommendation_results or []) + (similar_results or []):
+            try:
+                result_id=int(result.get("id"))
+            except (TypeError,ValueError):
+                total_invalid+=1
+                continue
+            if result_id in seen_ids:
+                continue
+            seen_ids.add(result_id)
+            results.append(result)
+
         log.info(
-            "Recommendation lookup: %s TMDB=%s returned %d candidate(s).",
-            kind,source["tmdb_id"],len(results),
+            "Recommendation lookup: %s TMDB=%s returned %d recommendation(s) + %d similar title(s) = %d unique candidate(s).",
+            kind,
+            source["tmdb_id"],
+            len(recommendation_results or []),
+            len(similar_results or []),
+            len(results),
         )
 
+        total_raw+=len(results)
         for result in results:
             try:
                 result_id=int(result.get("id"))
             except (TypeError,ValueError):
+                total_invalid+=1
                 continue
             if (kind,result_id) in excluded:
+                total_excluded+=1
                 continue
             if media_filter=="anime" and kind=="tv":
                 origin=result.get("origin_country") or []
                 if "JP" not in origin and result.get("original_language")!="ja":
+                    total_filtered+=1
                     continue
             if not result.get("name") and not result.get("title"):
+                total_invalid+=1
                 continue
 
             key=(kind,result_id)
@@ -1698,6 +1726,16 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
                 if float(result.get("vote_average") or 0) > float(entry.get("vote_average") or 0):
                     entry["vote_average"]=result.get("vote_average")
                     entry["vote_count"]=result.get("vote_count")
+
+    log.info(
+        "Recommendation filtering: %d unique raw, %d excluded by history, %d filtered by media type, %d invalid, %d fresh candidates.",
+        total_raw,
+        total_excluded,
+        total_filtered,
+        total_invalid,
+        len(candidates),
+    )
+
     ranked=sorted(
         candidates.values(),
         key=lambda item:(
