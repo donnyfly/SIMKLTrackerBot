@@ -156,7 +156,13 @@ async def episode_media(t,e):
     if not r: return None,e.get("episode_title"),None
     episode=r.get("episode") or {}
     imdb_id=(episode.get("external_ids") or {}).get("imdb_id")
-    still=await tmdb.get_episode_still(r["series_id"],r["season_number"],r["episode_number"])
+    still=r.get("still_url")
+    if not still and r.get("series_id") is not None:
+        still=await tmdb.get_episode_still(
+            r["series_id"],
+            r["season_number"],
+            r["episode_number"],
+        )
     # SIMKL anime episode titles can be romanized/romaji. Prefer TMDB's
     # English-localized title (get_episode_details requests en-US), with
     # SIMKL's title only as a fallback when TMDB has no English title.
