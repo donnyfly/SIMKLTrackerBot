@@ -138,12 +138,13 @@ def group_consecutive(es):
 
 async def episode_media(t,e):
     candidates=[]
-    # For anime, mapped TVDB season numbering is authoritative. SIMKL stores
-    # seasonal anime as separate entries, so original_season_num is often 1
-    # even when the real TV season is S02/S03/S04. Falling back to that 1
-    # causes the canonical TMDB series to return the wrong S01 episode.
-    if t=="anime" and e.get("mapped_tvdb_season_num") is not None:
-        values=(e.get("season_num"),e.get("mapped_tvdb_season_num"))
+    # For anime, SIMKL's season number is authoritative. Seasonal anime are
+    # commonly stored as separate SIMKL/Kitsu-style entries, while TMDB may
+    # expose a canonical series or a different season mapping. In particular,
+    # original_season_num is often 1 for every seasonal entry, so it must never
+    # be used as a fallback for the real season.
+    if t=="anime":
+        values=(e.get("season_num"),)
     else:
         values=(e.get("season_num"),e.get("mapped_tvdb_season_num"),e.get("original_season_num"))
     for v in values:
