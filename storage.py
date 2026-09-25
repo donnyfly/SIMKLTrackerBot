@@ -412,6 +412,12 @@ class Storage:
                     })
             return targets
 
+    async def get_channel(self, guild_id: int | str) -> int | None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            return guild.get("channel_id")
+
     async def set_channel(self, guild_id: int | str, channel_id: int) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
