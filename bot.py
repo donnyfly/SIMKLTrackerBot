@@ -1100,8 +1100,8 @@ STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster"),app_commands.Choice(name="Backdrop",value="backdrop")]
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 EPISODE_FORMAT_CHOICES=[
-    app_commands.Choice(name="Code (S3E05)",value="true"),
-    app_commands.Choice(name="Text (S3E05)",value="false"),
+    app_commands.Choice(name="Bold Text Format",value="false"),
+    app_commands.Choice(name="Code Block Format",value="true"),
 ]
 
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
@@ -2201,13 +2201,13 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set the default style for episode and movie watch activities.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
-@app_commands.describe(force_override="Force everyone to use the server settings, ignoring personal choices")
-async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,force_override: bool | None = None):
+@app_commands.describe(reset="Reset all server style options to the default settings",force_override="Force everyone to use the server settings, ignoring personal choices")
+async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,force_override: bool | None = None,reset: bool | None = None):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
 
     def settings_text(p, heading, forced=None):
-        episode_label="Code format (S2E04)" if p.get("episode_code", False) else "Plain text (S2E04)"
+        episode_label="Code Block Format" if p.get("episode_code", False) else "Bold Text Format"
         text=(
             f"{heading}\n"
             f"1. **Style:** **{p['style'].title()}**\n"
@@ -2221,6 +2221,13 @@ async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,art
         if forced is not None:
             text += f"\n8. **Force override:** **{'Enabled' if forced else 'Disabled'}**"
         return text
+
+    if reset is True:
+        await storage.reset_server_embed_preferences(g)
+        p=await storage.get_server_embed_preferences(g)
+        forced=await storage.get_server_embed_force_override(g)
+        await i.response.send_message(settings_text(p,"Server style settings have been reset to the defaults:",forced),ephemeral=True)
+        return
 
     if style is None and artwork is None and activity_text is None and episode_format is None and force_override is None:
         p=await storage.get_server_embed_preferences(g)
