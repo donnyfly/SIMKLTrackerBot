@@ -1660,10 +1660,19 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
     for source in sources:
         if source["kind"]=="movie":
             results=await tmdb.get_movie_recommendations(source["tmdb_id"])
+            if not results:
+                results=await tmdb.get_movie_similar(source["tmdb_id"])
             kind="movie"
         else:
             results=await tmdb.get_tv_recommendations(source["tmdb_id"])
+            if not results:
+                results=await tmdb.get_tv_similar(source["tmdb_id"])
             kind="tv"
+
+        log.info(
+            "Recommendation lookup: %s TMDB=%s returned %d candidate(s).",
+            kind,source["tmdb_id"],len(results),
+        )
 
         for result in results:
             try:
