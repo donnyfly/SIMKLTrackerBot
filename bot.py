@@ -148,7 +148,6 @@ async def is_anime_movie_item(item):
             "TMDB anime movie classification failed for %s (TMDB=%s).",
             show.get("title") or "Untitled",
             tmdb_id,
-            exc_info=True,
         )
         return False
 
@@ -574,18 +573,14 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                     if english_title:
                         title=english_title
             except Exception:
-                log.warning(
-                    "TMDB anime status title lookup failed for %s.",
-                    title,
-                    exc_info=True,
-                )
+                log.warning("TMDB anime status title lookup failed for %s.", title)
         poster=simkl_poster_url(m.get("poster"))
         image=None
         if ids.get("tmdb") is not None:
             try:
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
             except Exception:
-                log.warning("TMDB status artwork lookup failed for %s.", title, exc_info=True)
+                log.warning("TMDB status artwork lookup failed for %s.", title)
         rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb")) if p.get("show_imdb", True) else None
         rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
         desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
@@ -594,7 +589,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
             try:
                 logo=await (tmdb.get_movie_logo(ids["tmdb"]) if t=="movies" else tmdb.get_tv_logo(ids["tmdb"]))
             except Exception:
-                log.warning("TMDB title logo lookup failed for %s.", title, exc_info=True)
+                log.warning("TMDB title logo lookup failed for %s.", title)
         e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p)
         if not await send_embed(ch,e,status):
             ok=False
@@ -623,7 +618,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     except Exception as exc:
         error=f"token validation: {type(exc).__name__}: {exc}"
         await mark_poll_failure(g,uid,error,previous_failures)
-        log.exception("Failed validating SIMKL token for user %s.",uid)
+        log.error("Failed validating SIMKL token for user %s: %s: %s",uid,type(exc).__name__,exc)
         return 0
     member,name=await resolve_member(g,uid)
     if not member:
@@ -636,7 +631,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     except Exception as exc:
         error=f"activity fetch: {type(exc).__name__}: {exc}"
         await mark_poll_failure(g,uid,error,previous_failures)
-        log.exception("Failed to get SIMKL activity timestamps for user %s.",uid)
+        log.error("Failed to get SIMKL activity timestamps for user %s: %s: %s",uid,type(exc).__name__,exc)
         return 0
     if not gu.get("history_seeded"):
         try:
@@ -645,7 +640,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         except Exception as exc:
             error=f"history seed: {type(exc).__name__}: {exc}"
             await mark_poll_failure(g,uid,error,previous_failures)
-            log.exception("Couldn't seed SIMKL history for user %s in guild %s.",uid,g)
+            log.error("Couldn't seed SIMKL history for user %s in guild %s: %s: %s",uid,g,type(exc).__name__,exc)
             return 0
     if not u.get("simkl_account_id") and uid not in profile_lookup_attempted:
         profile_lookup_attempted.add(uid)
@@ -656,7 +651,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
                 await storage.set_account_id(uid,aid)
                 u["simkl_account_id"]=aid
         except Exception:
-            log.warning("Profile lookup failed for %s.",uid,exc_info=True)
+            log.warning("Profile lookup failed for %s.",uid)
     profile=simkl_profile_url(u.get("simkl_account_id"))
     last=await storage.get_last_checked(g,uid)
     posted=0
@@ -666,7 +661,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         sdt=parse_iso(since)
         a=activities.get(ACTIVITY_KEYS[t]) or {}
         stamp=a.get("all")
-        log.info("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
+        log.debug("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
         if not stamp or parse_iso(stamp)<=sdt:
             continue
         try:
@@ -701,7 +696,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
                 log.warning("Some %s posts failed for user %s; checkpoint not advanced.",t,uid)
         except Exception as exc:
             cycle_errors.append(f"{t}: {type(exc).__name__}")
-            log.exception("Failed processing %s activity for user %s.",t,uid)
+            log.error("Failed processing %s activity for user %s: %s: %s",t,uid,type(exc).__name__,exc)
         await storage.flush()
     if cycle_errors:
         error="; ".join(cycle_errors)
@@ -749,7 +744,7 @@ async def poll_all(g=None):
                         except Exception as exc:
                             error=f"Discord channel unavailable: {type(exc).__name__}: {exc}"
                             await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
-                            log.exception("Couldn't access channel %s for guild %s.",x["channel_id"],gid)
+                            log.warning("Couldn't access channel %s for guild %s: %s: %s",x["channel_id"],gid,type(exc).__name__,exc)
                             continue
 
                     try:
@@ -757,11 +752,11 @@ async def poll_all(g=None):
                     except SimklAuthError as exc:
                         error=f"SIMKL authentication failed: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
-                        log.warning("Auth failed for %s.",uid)
+                        log.warning("SIMKL authentication failed for %s in guild %s: %s",uid,gid,exc)
                     except Exception as exc:
                         error=f"{type(exc).__name__}: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
-                        log.exception("Polling failed for %s in guild %s.",uid,gid)
+                        log.error("Polling failed for %s in guild %s: %s: %s",uid,gid,type(exc).__name__,exc)
 
                 return posted
 
