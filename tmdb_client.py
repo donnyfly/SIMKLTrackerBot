@@ -73,6 +73,19 @@ class TmdbClient:
             str | None,
         ] = {}
 
+        # Cache TVMaze show lookups used when TMDB is missing newer anime
+        # seasons/episodes.
+        self._tvmaze_show_cache: dict[
+            int,
+            dict | None,
+        ] = {}
+
+        # Cache TVMaze episode lookups.
+        self._tvmaze_episode_cache: dict[
+            tuple[int, int, int],
+            dict | None,
+        ] = {}
+
         # Cache the result of the more expensive anime episode resolver.
         self._anime_episode_cache: dict[
             tuple,
@@ -347,6 +360,105 @@ class TmdbClient:
         return str(title)
 
     # ------------------------------------------------------------------
+    # TVMaze fallback
+    # ------------------------------------------------------------------
+
+    async def _get_tvmaze_json(
+        self,
+        path: str,
+        params: dict | None = None,
+    ) -> dict | list | None:
+        """Get JSON from TVMaze without requiring a separate API key."""
+
+        try:
+            session = await self._get_session()
+
+            async with session.get(
+                f"https://api.tvmaze.com{path}",
+                params=params,
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+
+                return None
+
+        except (aiohttp.ClientError, TimeoutError):
+            log.warning(
+                "TVMaze request failed: %s",
+                path,
+                exc_info=True,
+            )
+            return None
+
+    async def find_tvmaze_show_by_tvdb(
+        self,
+        tvdb_id,
+    ) -> dict | None:
+        """Find the TVMaze show corresponding to a TVDB series ID."""
+
+        try:
+            tvdb_id = int(tvdb_id)
+        except (TypeError, ValueError):
+            return None
+
+        if tvdb_id in self._tvmaze_show_cache:
+            return self._tvmaze_show_cache[tvdb_id]
+
+        data = await self._get_tvmaze_json(
+            "/lookup/shows",
+            {"thetvdb": tvdb_id},
+        )
+
+        if not isinstance(data, dict):
+            data = None
+
+        self._tvmaze_show_cache[tvdb_id] = data
+        return data
+
+    async def get_tvmaze_episode(
+        self,
+        tvdb_id,
+        season_number,
+        episode_number,
+    ) -> dict | None:
+        """Return a TVMaze episode for an exact TVDB show season/episode."""
+
+        try:
+            tvdb_id = int(tvdb_id)
+            season_number = int(season_number)
+            episode_number = int(episode_number)
+        except (TypeError, ValueError):
+            return None
+
+        cache_key = (
+            tvdb_id,
+            season_number,
+            episode_number,
+        )
+
+        if cache_key in self._tvmaze_episode_cache:
+            return self._tvmaze_episode_cache[cache_key]
+
+        show = await self.find_tvmaze_show_by_tvdb(tvdb_id)
+        if not show or show.get("id") is None:
+            self._tvmaze_episode_cache[cache_key] = None
+            return None
+
+        data = await self._get_tvmaze_json(
+            f"/shows/{show['id']}/episodebynumber",
+            {
+                "season": season_number,
+                "number": episode_number,
+            },
+        )
+
+        if not isinstance(data, dict):
+            data = None
+
+        self._tvmaze_episode_cache[cache_key] = data
+        return data
+
+    # ------------------------------------------------------------------
     # Anime-aware episode lookup
     # ------------------------------------------------------------------
 
@@ -464,6 +576,52 @@ class TmdbClient:
                 return result
 
         # --------------------------------------------------------------
+        # TVMaze fallback:
+        #
+        # TMDB can lag behind TVDB for newly released anime seasons.
+        # TVMaze can resolve the same TVDB series and exact season/episode,
+        # including an episode-level IMDb ID.
+        # --------------------------------------------------------------
+
+        if tvdb_id:
+            for season_number in candidates:
+                episode = await self.get_tvmaze_episode(
+                    tvdb_id,
+                    season_number,
+                    episode_number,
+                )
+
+                if not episode:
+                    continue
+
+                result = {
+                    "series_id": None,
+                    "season_number": season_number,
+                    "episode_number": episode_number,
+                    "episode": {
+                        "name": episode.get("name"),
+                        "external_ids": {
+                            "imdb_id": (
+                                (episode.get("externals") or {}).get("imdb")
+                            ),
+                        },
+                    },
+                    "still_url": (
+                        (episode.get("image") or {}).get("original")
+                        or (episode.get("image") or {}).get("medium")
+                    ),
+                    "source": "tvmaze",
+                }
+                self._anime_episode_cache[cache_key] = result
+                log.info(
+                    "Resolved anime episode via TVMaze: TVDB=%s S%02dE%02d.",
+                    tvdb_id,
+                    season_number,
+                    episode_number,
+                )
+                return result
+
+        # --------------------------------------------------------------
         # Broader fallback:
         #
         # Look through TMDB's seasons and find an episode whose
@@ -517,26 +675,6 @@ class TmdbClient:
                         != int(episode_number)
                     ):
                         continue
-
-                    # If we know the title, use it as an additional
-                    # safety check.
-                    if episode_title:
-                        tmdb_title = (
-                            episode.get("name") or ""
-                        ).strip().casefold()
-
-                        simkl_title = (
-                            str(episode_title)
-                            .strip()
-                            .casefold()
-                        )
-
-                        if (
-                            tmdb_title
-                            and simkl_title
-                            and tmdb_title != simkl_title
-                        ):
-                            continue
 
                     result = {
                         "series_id": current_series_id,
