@@ -753,7 +753,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
                     ch,g,uid,name,member,t,anime_shows,profile
                 )
                 movie_count,movie_ok=await process_movies(
-                    ch,g,uid,name,member,anime_movies,sdt,profile
+                    ch,g,uid,name,member,anime_movies,sdt,profile,force_scan=force_scan
                 )
                 wc=show_count+movie_count
                 wo=show_ok and movie_ok
@@ -762,7 +762,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
                     ch,g,uid,name,member,t,items,profile
                 )
                 wc,wo=await process_movies(
-                    ch,g,uid,name,member,items,sdt,profile
+                    ch,g,uid,name,member,items,sdt,profile,force_scan=force_scan
                 )
 
             if so and wo:
