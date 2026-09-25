@@ -1593,7 +1593,7 @@ async def _recommendation_sources(uid,user,token,media_filter):
                 if tmdb_id is None:
                     continue
                 status=item.get("status")
-                if status in {"watching","completed","dropped"}:
+                if status in {"watching","completed","dropped","plantowatch"}:
                     excluded.add(("movie",int(tmdb_id)))
                 if status=="completed" or item.get("last_watched_at"):
                     sources.append({
