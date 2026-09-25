@@ -176,7 +176,7 @@ def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,po
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
     e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
-    selected=poster if p["artwork"]=="poster" or p["style"]=="poster" else image
+    selected=poster if p["artwork"]=="poster" else image
     selected=selected or poster or image
     if selected:
         if p["style"]=="minimal":
@@ -564,7 +564,7 @@ async def poll_all(g=None):
             len(users),len(targets),posted,duration,POLL_CONCURRENCY
         )
         return posted
-STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal"),app_commands.Choice(name="Poster (large poster)",value="poster")]
+STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster"),app_commands.Choice(name="Backdrop",value="backdrop")]
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
