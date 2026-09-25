@@ -509,16 +509,24 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                 # not a valid TMDB movie, so artwork, English title, and
                 # MDBList ratings all use the same canonical movie ID.
                 english_title=None
-                if tmdb_movie_id is not None:
+                # Anime movie records are especially prone to carrying a
+                # stale/season-specific TMDB ID. Resolve by title first so a
+                # valid-but-wrong TMDB movie ID cannot silently win.
+                match=await tmdb.find_movie_by_title(m.get("title"))
+                if match:
+                    tmdb_movie_id=match["id"]
+                    english_title=match.get("title")
+                    log.info(
+                        "Resolved anime movie %r -> TMDB movie %s (%s).",
+                        m.get("title") or "Untitled",
+                        tmdb_movie_id,
+                        english_title or "Untitled",
+                    )
+                elif tmdb_movie_id is not None:
                     english_title=await tmdb.get_movie_title(
                         tmdb_movie_id,
                         prefer_english=True,
                     )
-                if not english_title:
-                    match=await tmdb.find_movie_by_title(m.get("title"))
-                    if match:
-                        tmdb_movie_id=match["id"]
-                        english_title=match.get("title")
                 if english_title:
                     title=english_title
             except Exception:
@@ -668,7 +676,7 @@ async def mark_poll_failure(g,uid,error,previous_failures=0):
     failures=max(int(previous_failures or 0),0)+1
     await storage.update_poll_health(g,uid,last_error=error,consecutive_failures=failures,flush=True)
 
-async def poll_one(ch,g,uid,u,gu,request_cache=None):
+async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
     try:
@@ -724,8 +732,11 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         sdt=parse_iso(since)
         a=activities.get(ACTIVITY_KEYS[t]) or {}
         stamp=a.get("all")
-        log.debug("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
-        if not stamp or parse_iso(stamp)<=sdt:
+        log.debug("Check %s/%s: SIMKL %s activity=%r checkpoint=%s force_scan=%s",g,uid,t,stamp,since,force_scan)
+        # Normal polling uses the activity timestamp as a cheap change
+        # detector. /simkl-checknow can bypass it because SIMKL's activity
+        # feed can lag behind the watched-item data for a short time.
+        if not force_scan and (not stamp or parse_iso(stamp)<=sdt):
             continue
         try:
             items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
@@ -772,7 +783,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         await storage.flush()
     return posted
 
-async def poll_all(g=None):
+async def poll_all(g=None,force_scan=False):
     started = time.monotonic()
 
     async with poll_lock:
@@ -811,7 +822,7 @@ async def poll_all(g=None):
                             continue
 
                     try:
-                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache)
+                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache,force_scan=force_scan)
                     except SimklAuthError as exc:
                         error=f"SIMKL authentication failed: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
@@ -2254,7 +2265,7 @@ async def simkl_checknow(i):
     if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
     last_checknow_at=time.monotonic()
     await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
-    posted=await poll_all(g)
+    posted=await poll_all(g,force_scan=True)
     await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
 POLL_RETRY_DELAY_SECONDS=60
