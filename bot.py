@@ -1449,4 +1449,4 @@ async def polling_loop():
             await asyncio.sleep(retry_delay)
             retry_delay=min(retry_delay*2,POLL_MAX_RETRY_DELAY_SECONDS)
             next_run=time.monotonic()
-if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN)
+if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN, log_handler=None)
