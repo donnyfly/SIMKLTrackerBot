@@ -388,13 +388,24 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
             successful[key]=status
             continue
         title=m.get("title") or "Untitled"
-        if t=="anime" and ids.get("tmdb") is not None:
+        if t=="anime":
             try:
-                english_title=await tmdb.get_tv_title(ids["tmdb"], prefer_english=True)
-                if english_title:
-                    title=english_title
+                anime_tmdb_id=ids.get("tmdb")
+                if anime_tmdb_id is None and ids.get("tvdb") is not None:
+                    anime_tmdb_id=await tmdb.find_series_by_tvdb(ids["tvdb"])
+                if anime_tmdb_id is not None:
+                    english_title=await tmdb.get_tv_title(
+                        anime_tmdb_id,
+                        prefer_english=True,
+                    )
+                    if english_title:
+                        title=english_title
             except Exception:
-                log.warning("TMDB anime status title lookup failed for %s.", title, exc_info=True)
+                log.warning(
+                    "TMDB anime status title lookup failed for %s.",
+                    title,
+                    exc_info=True,
+                )
         poster=simkl_poster_url(m.get("poster"))
         image=None
         if ids.get("tmdb") is not None:
