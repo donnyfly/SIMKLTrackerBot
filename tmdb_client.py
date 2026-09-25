@@ -404,11 +404,35 @@ class TmdbClient:
         if tvdb_id in self._tvmaze_show_cache:
             return self._tvmaze_show_cache[tvdb_id]
 
-        data = await self._get_tvmaze_json(
-            "/lookup/shows",
-            {"thetvdb": tvdb_id},
-        )
+        # TVMaze lookup redirects to the matched show page instead of returning JSON.
+        # Extract the show ID from Location, then fetch the JSON resource directly.
+        try:
+            session = await self._get_session()
+            async with session.get(
+                "https://api.tvmaze.com/lookup/shows",
+                params={"thetvdb": tvdb_id},
+                allow_redirects=False,
+            ) as resp:
+                if resp.status not in (301, 302, 303, 307, 308):
+                    self._tvmaze_show_cache[tvdb_id] = None
+                    return None
+                location = resp.headers.get("Location") or ""
+        except (aiohttp.ClientError, TimeoutError):
+            log.warning(
+                "TVMaze show lookup failed for TVDB=%s.",
+                tvdb_id,
+                exc_info=True,
+            )
+            self._tvmaze_show_cache[tvdb_id] = None
+            return None
 
+        try:
+            show_id = int(location.rstrip("/").rsplit("/", 1)[-1])
+        except (TypeError, ValueError):
+            self._tvmaze_show_cache[tvdb_id] = None
+            return None
+
+        data = await self._get_tvmaze_json(f"/shows/{show_id}")
         if not isinstance(data, dict):
             data = None
 
