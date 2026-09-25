@@ -799,7 +799,7 @@ class TmdbClient:
                     {
                         "query": query,
                         "language": "en-US",
-                        "include_adult": False,
+                        "include_adult": "false",
                     },
                 )
                 results = search.get("results") if search else None
