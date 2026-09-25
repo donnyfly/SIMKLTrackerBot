@@ -633,7 +633,7 @@ async def simkl_link(i):
     linking_users.add(key)
     try:
         await i.response.defer(ephemeral=True); pin=await simkl.start_pin_auth(); code=pin["user_code"]; device=pin["device_code"]; expires=pin.get("expires_in",900); interval=pin.get("interval",5); url=pin.get("verification_uri","https://simkl.com/pin")
-        await i.followup.send(f"Go to {url}\nEnter this code: {code}\nThe code expires in about {expires//60} minutes.",ephemeral=True)
+        await i.followup.send(f"Go to {url}\nEnter this code: `{code}`\nThe code expires in about {expires//60} minutes.",ephemeral=True)
         elapsed=0; tokens=None
         while elapsed<expires:
             await asyncio.sleep(interval); elapsed+=interval
