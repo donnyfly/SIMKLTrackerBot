@@ -282,6 +282,16 @@ async def get_movie_ratings(tmdb_id):
         log.warning("MDBList movie rating lookup failed for %s.", tmdb_id, exc_info=True)
         return None
 
+async def get_show_ratings(tmdb_id):
+    if mdblist is None or tmdb_id is None:
+        return None
+    try:
+        ratings = await mdblist.get_ratings("show", tmdb_id)
+        return {"imdb": ratings.get("imdb"), "mal": ratings.get("myanimelist")}
+    except Exception:
+        log.warning("MDBList show rating lookup failed for %s.", tmdb_id, exc_info=True)
+        return None
+
 def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,logo=None,preferences=None):
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
@@ -512,16 +522,13 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                     title,
                     exc_info=True,
                 )
-        movie_ratings = await get_movie_ratings(ids.get("tmdb")) if anime_movie else None
-        imdb_rating = movie_ratings.get("imdb") if movie_ratings else await get_imdb_rating("movie", ids.get("tmdb"))
-        mal_rating = movie_ratings.get("mal") if movie_ratings else None
-        rating_parts = []
-        if p.get("show_imdb", True) and imdb_rating is not None:
-            rating_parts.append(f"⭐ IMDb {imdb_rating:.1f}/10")
-        if anime_movie and p.get("show_mal", True) and mal_rating is not None:
-            rating_parts.append(f"⭐ MAL {mal_rating:.2f}/10")
-        rating_text = " · " + " · ".join(rating_parts) if rating_parts else ""
-        verb="rewatched" if rw else "watched a movie"; desc=f"{verb}{rating_text}" if p["activity_text"]!="detailed" else f"{verb} **{title}**{rating_text}"
+        imdb_rating = await get_imdb_rating("movie", ids.get("tmdb")) if p.get("show_imdb", True) else None
+        verb="rewatched" if rw else "watched a movie"
+        desc=f"{verb}"
+        if p["activity_text"]=="detailed":
+            desc=f"{verb} **{title}**"
+        if imdb_rating is not None:
+            desc += f"\n⭐ IMDb {imdb_rating:.1f}/10"
         logo=None
         if ids.get("tmdb") is not None and p["artwork"] in ("auto", "backdrop"):
             try:
@@ -599,9 +606,21 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 image=await (tmdb.get_movie_backdrop(ids["tmdb"]) if t=="movies" else tmdb.get_tv_backdrop(ids["tmdb"]))
             except Exception:
                 log.warning("TMDB status artwork lookup failed for %s.", title)
-        rating = await get_imdb_rating("movie" if t=="movies" else "show", ids.get("tmdb")) if p.get("show_imdb", True) else None
-        rating_text = f" · ⭐ IMDb {rating:.1f}/10" if rating is not None else ""
-        desc=f"{STATUS_TEXT[status]}{rating_text}" if p["activity_text"]!="detailed" else f"{STATUS_TEXT[status]} **{title}**{rating_text}"
+        ratings = None
+        if p.get("show_imdb", True) or (t=="anime" and p.get("show_mal", True)):
+            ratings = await (
+                get_movie_ratings(ids.get("tmdb"))
+                if t=="movies"
+                else get_show_ratings(ids.get("tmdb"))
+            )
+        desc=STATUS_TEXT[status]
+        if p["activity_text"]=="detailed":
+            desc=f"{STATUS_TEXT[status]} **{title}**"
+        if ratings:
+            if p.get("show_imdb", True) and ratings.get("imdb") is not None:
+                desc += f"\n⭐ IMDb {ratings['imdb']:.1f}/10"
+            if t=="anime" and p.get("show_mal", True) and ratings.get("mal") is not None:
+                desc += f"\n🌸 MAL {ratings['mal']:.2f}/10"
         logo=None
         if ids.get("tmdb") is not None and p["artwork"] in ("auto", "backdrop"):
             try:
