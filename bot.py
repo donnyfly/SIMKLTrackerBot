@@ -1856,16 +1856,18 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
                 mal_rating=ratings.get("myanimelist")
                 if mal_rating is not None:
                     rating_parts.append(f"🌸 MAL **{mal_rating:.1f}**")
-            rating_text=""
-            if rating_parts:
-                code_fence="`" * 3
-                rating_text="\n" + code_fence + "\n" + " · ".join(rating_parts) + "\n" + code_fence
             source_count=int(result.get("_sources",1))
             reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
             release_date=result.get("first_air_date") or result.get("release_date") or ""
             year=release_date[:4] if release_date else None
             result_url=simkl_redirect_url(result.get("id"),"movie" if result.get("_recommendation_kind")=="movie" else "tv",title,year)
-            lines.append(f"**{index}.** [{title}]({result_url}){rating_text} — {reason}")
+            recommendation_line=f"**{index}.** [{title}]({result_url}) — {reason}"
+            if rating_parts:
+                code_fence="`" * 3
+                rating_block="\n" + code_fence + "\n" + " · ".join(rating_parts) + "\n" + code_fence
+                lines.append(recommendation_line + rating_block)
+            else:
+                lines.append(recommendation_line)
 
         embed=discord.Embed(
             title=f"🧠 {i.user.display_name} · Recommendations",
