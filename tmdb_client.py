@@ -1201,6 +1201,36 @@ class TmdbClient:
         results=(data or {}).get("results") if isinstance(data,dict) else None
         return results if isinstance(results,list) else []
 
+    async def get_tv_similar(self, series_id, page=1) -> list[dict]:
+        """Return TMDB titles similar to a TV series."""
+        try:
+            series_id=int(series_id)
+            page=int(page)
+        except (TypeError,ValueError):
+            return []
+
+        data=await self._get_json(
+            f"{API_BASE}/tv/{series_id}/similar",
+            {"language":"en-US","page":page},
+        )
+        results=(data or {}).get("results") if isinstance(data,dict) else None
+        return results if isinstance(results,list) else []
+
+    async def get_movie_similar(self, movie_id, page=1) -> list[dict]:
+        """Return TMDB movies similar to a movie."""
+        try:
+            movie_id=int(movie_id)
+            page=int(page)
+        except (TypeError,ValueError):
+            return []
+
+        data=await self._get_json(
+            f"{API_BASE}/movie/{movie_id}/similar",
+            {"language":"en-US","page":page},
+        )
+        results=(data or {}).get("results") if isinstance(data,dict) else None
+        return results if isinstance(results,list) else []
+
     # ------------------------------------------------------------------
     # Movies
     # ------------------------------------------------------------------
