@@ -44,7 +44,7 @@ if not TMDB_API_KEY:
 
 MEDIA_TYPES=("shows","anime","movies"); ACTIVITY_KEYS={"shows":"tv_shows","anime":"anime","movies":"movies"}
 WATCHLIST_STATUSES=("watching","plantowatch","completed","dropped")
-STATUS_TEXT={"watching":"started watching","plantowatch":"planned to watch","completed":"completed","dropped":"dropped"}
+STATUS_TEXT={"watching":"Started watching","plantowatch":"Planned to watch","completed":"Completed","dropped":"Dropped"}
 MEDIA_STYLES={"shows":(0x3498DB,"📺 TV"),"anime":(0xE91E63,"🌸 Anime"),"movies":(0xF1C40F,"🎬 Movie")}
 HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
 poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
@@ -237,7 +237,7 @@ def iter_show_episodes(t,items):
 
 def format_episode_range(s,a,b):
     if s is None: return f"E{a:02d}" if a==b else f"E{a:02d}-E{b:02d}"
-    return f"S{s:02d}E{a:02d}" if a==b else f"S{s:02d}E{a:02d}-E{b:02d}"
+    return f"S{s}E{a:02d}" if a==b else f"S{s}E{a:02d}-E{b:02d}"
 def group_consecutive(es):
     es=sorted(es,key=lambda x:x["episode_number"]); groups=[]
     for e in es:
@@ -482,10 +482,10 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             except Exception:
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title,episode_imdb_id=None,grp[0].get("episode_title"),None
-            label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind
+            label=format_episode_range(sn,grp[0]["episode_number"],grp[-1]["episode_number"]); verb=kind.capitalize()
             rating = await imdb.get_rating(episode_imdb_id) if len(grp) == 1 and p.get("show_imdb", True) else None
-            desc=f"{verb} **{label}**"
-            if p["activity_text"]=="detailed": desc=f"{verb} **{label}** of **{title}**"
+            desc=f"{verb} `{label}`"
+            if p["activity_text"]=="detailed": desc=f"{verb} `{label}` of **{title}**"
             if len(grp)==1:
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
