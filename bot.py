@@ -150,9 +150,8 @@ async def is_anime_movie_item(item):
 
     # Explicit TV/anime-series metadata and episode/season data must always
     # win over third-party ID lookups. TMDB IDs can collide across media
-    # types; for example, a SIMKL anime series can carry a TMDB ID that also
-    # resolves to an unrelated movie. Never classify a series as a movie just
-    # because TMDB has a movie record for the same numeric ID.
+    # types; never classify a series as a movie just because TMDB has a movie
+    # record for the same numeric ID.
     if show.get("type") in {"tv", "show"} or show.get("anime_type") in {
         "tv", "special", "ova", "ona", "music video"
     }:
@@ -161,7 +160,7 @@ async def is_anime_movie_item(item):
         return False
 
     # If SIMKL provides a TVDB ID, use it only to confirm that the item maps
-    # to a TV series. This is safe against the TMDB movie-ID collision above.
+    # to a TV series. This is safe against TMDB movie-ID collisions.
     tvdb_id=(show.get("ids") or {}).get("tvdb")
     if tvdb_id is not None:
         try:
@@ -1501,3 +1500,751 @@ async def _currently_watching_items(uid,user,token,media_types):
             for show_item in episode_items:
                 media=show_item.get("show") or {}
                 ids=media.get("ids") or {}
+                latest=_latest_watched_episode(show_item)
+                results.append({
+                    "media_type":media_type,
+                    "title":media.get("title") or "Untitled",
+                    "ids":ids,
+                    "poster":media.get("poster"),
+                    "latest":latest,
+                })
+    return results,token
+
+
+@bot.tree.command(
+    name="simkl-watching",
+    description="Show what you're currently watching on SIMKL.",
+)
+@app_commands.choices(type=WATCHING_TYPE_CHOICES)
+@app_commands.describe(type="Optionally limit the list to TV, anime, or movies.")
+async def simkl_watching(i,type: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    await i.response.defer(ephemeral=True)
+
+    try:
+        token=await valid_token(uid,user)
+        media_filter=type.value if type else "all"
+        media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+        items,token=await _currently_watching_items(uid,user,token,media_types)
+
+        if not items:
+            await i.followup.send(
+                "You're not currently watching anything on SIMKL.",
+                ephemeral=True,
+            )
+            return
+
+        items.sort(key=lambda item: item["title"].casefold())
+        lines=[]
+        for item in items[:15]:
+            label=MEDIA_STYLES[item["media_type"]][1]
+            emoji={"shows":"📺","anime":"🌸","movies":"🎬"}.get(item["media_type"],"🎬")
+            line=f"{emoji} **{item['title']}**"
+            latest=item.get("latest")
+            if latest:
+                _,season,episode,episode_title=latest
+                if season is not None and episode is not None:
+                    line+=f" — **S{int(season):02d}E{int(episode):02d}**"
+                elif episode is not None:
+                    line+=f" — **E{int(episode):02d}**"
+                if episode_title:
+                    line+=f" · {episode_title}"
+            lines.append(line)
+
+        if len(items)>15:
+            lines.append(f"\n…and **{len(items)-15}** more.")
+
+        embed=discord.Embed(
+            title=f"👀 {i.user.display_name} · Currently Watching",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Live from SIMKL · Currently watching")
+        await i.followup.send(embed=embed,ephemeral=True)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Currently watching failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't load your currently watching list right now. Please try again in a moment.",
+            ephemeral=True,
+        )
+
+
+async def _recommendation_sources(uid,user,token,media_filter):
+    request_cache={}
+    media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+    sources=[]
+    excluded=set()
+
+    for media_type in media_types:
+        items,token=await cached_simkl_items(
+            uid,user,token,media_type,
+            request_cache=request_cache,
+            timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+        )
+        for item in items or []:
+            if media_type=="movies":
+                media=item.get("movie") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None:
+                    continue
+                status=item.get("status")
+                if status in {"watching","completed","dropped","plantowatch"}:
+                    excluded.add(("movie",int(tmdb_id)))
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or item.get("last_watched_at")):
+                    sources.append({
+                        "kind":"movie",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":item.get("last_watched_at") or "",
+                        "anime":media_filter=="anime",
+                    })
+                continue
+
+            episode_items,movie_items=([item],[]) if media_type!="anime" else await split_anime_items([item])
+
+            for movie_item in movie_items:
+                media=movie_item.get("movie") or movie_item.get("show") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None:
+                    continue
+                status=movie_item.get("status")
+                if status in {"watching","completed","dropped","plantowatch"}:
+                    excluded.add(("movie",int(tmdb_id)))
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or movie_item.get("last_watched_at")):
+                    sources.append({
+                        "kind":"movie",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":movie_item.get("last_watched_at") or "",
+                        "anime":media_filter=="anime" or media_type=="anime",
+                    })
+
+            for show_item in episode_items:
+                media=show_item.get("show") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None and ids.get("tvdb") is not None:
+                    tmdb_id=await tmdb.find_series_by_tvdb(ids.get("tvdb"))
+                if tmdb_id is None:
+                    continue
+                status=show_item.get("status")
+                if status in {"watching","completed","dropped","plantowatch"}:
+                    excluded.add(("tv",int(tmdb_id)))
+                latest=_latest_watched_episode(show_item)
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or show_item.get("last_watched_at") or latest):
+                    watched_at=show_item.get("last_watched_at") or (latest[0].isoformat() if latest else "")
+                    sources.append({
+                        "kind":"tv",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":watched_at,
+                        "anime":media_filter=="anime",
+                    })
+
+    sources.sort(key=lambda item:item.get("watched_at") or "",reverse=True)
+    log.info(
+        "Recommendation sources for user %s: %d sources, %d exclusions, filter=%s",
+        uid,len(sources),len(excluded),media_filter,
+    )
+    return sources[:8],excluded,token
+
+
+async def _get_recommendation_candidates(sources,excluded,media_filter):
+    candidates={}
+    total_raw=0
+    total_excluded=0
+    total_filtered=0
+    total_invalid=0
+
+    for source in sources:
+        if source["kind"]=="movie":
+            recommendation_results=await tmdb.get_movie_recommendations(source["tmdb_id"])
+            similar_results=await tmdb.get_movie_similar(source["tmdb_id"])
+            kind="movie"
+        else:
+            recommendation_results=await tmdb.get_tv_recommendations(source["tmdb_id"])
+            similar_results=await tmdb.get_tv_similar(source["tmdb_id"])
+            kind="tv"
+
+        # Keep both TMDB recommendation and similar-title results. A title can
+        # legitimately have recommendation results that are all already in the
+        # user's history, while /similar still has fresh candidates.
+        results=[]
+        seen_ids=set()
+        for result in (recommendation_results or []) + (similar_results or []):
+            try:
+                result_id=int(result.get("id"))
+            except (TypeError,ValueError):
+                total_invalid+=1
+                continue
+            if result_id in seen_ids:
+                continue
+            seen_ids.add(result_id)
+            results.append(result)
+
+        log.info(
+            "Recommendation lookup: %s TMDB=%s returned %d recommendation(s) + %d similar title(s) = %d unique candidate(s).",
+            kind,
+            source["tmdb_id"],
+            len(recommendation_results or []),
+            len(similar_results or []),
+            len(results),
+        )
+
+        total_raw+=len(results)
+        for result in results:
+            try:
+                result_id=int(result.get("id"))
+            except (TypeError,ValueError):
+                total_invalid+=1
+                continue
+            if (kind,result_id) in excluded:
+                total_excluded+=1
+                continue
+            if media_filter=="anime" and kind=="tv":
+                origin=result.get("origin_country") or []
+                if "JP" not in origin and result.get("original_language")!="ja":
+                    total_filtered+=1
+                    continue
+            if not result.get("name") and not result.get("title"):
+                total_invalid+=1
+                continue
+
+            key=(kind,result_id)
+            entry=candidates.get(key)
+            if entry is None:
+                entry=dict(result)
+                entry["_recommendation_kind"]=kind
+                entry["_sources"]=1
+                entry["_anime"]=bool(source.get("anime"))
+            else:
+                entry["_sources"]+=1
+                entry["_anime"]=entry.get("_anime",False) or bool(source.get("anime"))
+                if float(result.get("vote_average") or 0) > float(entry.get("vote_average") or 0):
+                    entry["vote_average"]=result.get("vote_average")
+                    entry["vote_count"]=result.get("vote_count")
+            candidates[key]=entry
+
+    log.info(
+        "Recommendation filtering: %d unique raw, %d excluded by history, %d filtered by media type, %d invalid, %d fresh candidates.",
+        total_raw,
+        total_excluded,
+        total_filtered,
+        total_invalid,
+        len(candidates),
+    )
+    log.info(
+        "Recommendation candidate map: %d entries, keys=%s",
+        len(candidates),
+        list(candidates.keys())[:10],
+    )
+
+    ranked=sorted(
+        candidates.values(),
+        key=lambda item:(
+            -int(item.get("_sources",1)),
+            -float(item.get("vote_average") or 0),
+            -float(item.get("popularity") or 0),
+            str(item.get("name") or item.get("title") or "").casefold(),
+        ),
+    )
+    return ranked
+
+
+@bot.tree.command(
+    name="simkl-recommend",
+    description="Get personalized recommendations based on your SIMKL history.",
+)
+@app_commands.choices(type=[
+    app_commands.Choice(name="Everything",value="all"),
+    app_commands.Choice(name="TV",value="shows"),
+    app_commands.Choice(name="Anime",value="anime"),
+    app_commands.Choice(name="Movies",value="movies"),
+])
+async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    await i.response.defer(ephemeral=True)
+    media_filter=type.value if type else "all"
+
+    try:
+        token=await valid_token(uid,user)
+        sources,excluded,token=await _recommendation_sources(uid,user,token,media_filter)
+
+        if not sources:
+            await i.followup.send(
+                "I need some watched history before I can make recommendations. Watch a few titles on SIMKL and try again.",
+                ephemeral=True,
+            )
+            return
+
+        recommendations=await _get_recommendation_candidates(sources,excluded,media_filter)
+        log.info(
+            "Recommendation candidates for user %s: %d from %d sources",
+            uid,len(recommendations),len(sources),
+        )
+        if not recommendations:
+            await i.followup.send(
+                "I couldn't find a fresh recommendation from your current SIMKL history. Try adding more watched titles.",
+                ephemeral=True,
+            )
+            return
+
+        selected=recommendations[:5]
+
+        async def recommendation_ratings(result):
+            if mdblist is None or result.get("id") is None:
+                return {}
+
+            media_type="movie" if result.get("_recommendation_kind")=="movie" else "show"
+            try:
+                ratings=await mdblist.get_ratings(media_type,result.get("id"))
+                if not isinstance(ratings,dict):
+                    return {}
+                return ratings
+            except Exception:
+                log.warning(
+                    "Recommendation rating lookup failed for TMDB=%s.",
+                    result.get("id"),
+                    exc_info=True,
+                )
+                return {}
+
+        rating_results=await asyncio.gather(
+            *(recommendation_ratings(result) for result in selected)
+        )
+
+        lines=[]
+        for index,(result,ratings) in enumerate(zip(selected,rating_results),1):
+            title=result.get("name") or result.get("title") or "Untitled"
+            rating_parts=[]
+            imdb_rating=ratings.get("imdb")
+            if imdb_rating is not None:
+                rating_parts.append(f"⭐ IMDb **{imdb_rating:.1f}**")
+            if result.get("_anime"):
+                mal_rating=ratings.get("myanimelist")
+                if mal_rating is not None:
+                    rating_parts.append(f"🌸 MAL **{mal_rating:.1f}**")
+            rating_text=f" · {' · '.join(rating_parts)}" if rating_parts else ""
+            source_count=int(result.get("_sources",1))
+            reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
+            release_date=result.get("first_air_date") or result.get("release_date") or ""
+            year=release_date[:4] if release_date else None
+            result_url=simkl_redirect_url(result.get("id"),"movie" if result.get("_recommendation_kind")=="movie" else "tv",title,year)
+            lines.append(f"**{index}.** [{title}]({result_url}){rating_text} — {reason}")
+
+        embed=discord.Embed(
+            title=f"🧠 {i.user.display_name} · Recommendations",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Personalized from your SIMKL watch history · IMDb ratings")
+        await i.followup.send(embed=embed,ephemeral=True)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Recommendation engine failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't generate recommendations right now. Please try again in a moment.",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(name="simkl-random",description="Pick something random from your SIMKL Plan To Watch list.")
+@app_commands.choices(type=RANDOM_TYPE_CHOICES,genre=RANDOM_GENRE_CHOICES)
+@app_commands.describe(
+    type="Choose what kind of title to pick.",
+    genre="Optionally limit the pick to a genre.",
+)
+async def simkl_random(
+    i,
+    type: app_commands.Choice[str] | None = None,
+    genre: app_commands.Choice[str] | None = None,
+):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    media_filter=type.value if type else "all"
+    genre_filter=genre.value if genre else ""
+
+    await i.response.defer()
+
+    try:
+        token=await valid_token(uid,user)
+        media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+        candidates=[]
+
+        for media_type in media_types:
+            items,token=await cached_simkl_items(
+                uid,user,token,media_type,
+                timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+            )
+            for item in items or []:
+                if item.get("status")!="plantowatch":
+                    continue
+                if genre_filter and not await random_picker_matches_genre(item,media_type,genre_filter):
+                    continue
+                candidates.append((media_type,item))
+
+        if not candidates:
+            description="I couldn't find anything matching those filters in your **Plan To Watch** list."
+            if genre_filter:
+                description+=f"\n\nTry a different genre or remove the **{genre_filter.title()}** filter."
+            await i.followup.send(description,ephemeral=True)
+            return
+
+        media_type,item=random.choice(candidates)
+        title,episode_count,ids=await random_picker_media_details(item,media_type)
+        simkl_id=ids.get("simkl")
+        slug=ids.get("slug")
+        title_url=simkl_title_url(media_type,simkl_id,slug) if simkl_id else None
+
+        poster_obj=item.get("movie") if media_type=="movies" else item.get("show")
+        poster=(poster_obj or {}).get("poster")
+        if media_type=="movies":
+            image=await tmdb.get_movie_backdrop(ids.get("tmdb"))
+            logo=await tmdb.get_movie_logo(ids.get("tmdb"))
+        else:
+            image=await tmdb.get_tv_backdrop(ids.get("tmdb"))
+            logo=await tmdb.get_tv_logo(ids.get("tmdb"))
+
+        prefs=await storage.get_embed_preferences(g,uid)
+        label=MEDIA_STYLES[media_type][1]
+        lines=[f"**{label}**"]
+
+        if episode_count:
+            lines.append(f"📺 **{episode_count:,}** episode(s) total.")
+
+        added_at=random_picker_added_at(item)
+        if added_at:
+            added_dt=parse_iso(added_at)
+            if added_dt != datetime.min.replace(tzinfo=timezone.utc):
+                lines.append(f"📅 Added to Plan To Watch: **<t:{int(added_dt.timestamp())}:D>**")
+
+        if genre_filter:
+            lines.append(f"🏷️ Genre filter: **{genre_filter.title()}**")
+
+        embed=build_embed(
+            media_type,
+            "\n".join(lines),
+            datetime.now(timezone.utc),
+            i.user.display_name,
+            i.user,
+            image,
+            simkl_profile_url(user.get("simkl_account_id")),
+            title=title,
+            title_url=title_url,
+            poster=simkl_poster_url(poster) if poster else None,
+            logo=logo,
+            preferences=prefs,
+        )
+        embed.title=f"🎲 Random Pick · {title}"
+        embed.set_footer(text=f"{label} · SIMKL Plan To Watch")
+        await i.followup.send(embed=embed)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Random picker failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't pick a title right now. Please try again in a moment.",
+            ephemeral=True,
+        )
+
+@bot.tree.command(name="simkl-link",description="Link your SIMKL account in this server.")
+async def simkl_link(i):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    uid=str(i.user.id); key=f"{g}:{uid}"
+    if key in linking_users: await i.response.send_message("You already have a linking code waiting.",ephemeral=True); return
+    linking_users.add(key)
+    try:
+        await i.response.defer(ephemeral=True); pin=await simkl.start_pin_auth(); code=pin["user_code"]; device=pin["device_code"]; expires=pin.get("expires_in",900); interval=pin.get("interval",5); url=pin.get("verification_uri","https://simkl.com/pin")
+        await i.followup.send(f"Go to {url}\nEnter this code: `{code}`\nThe code expires in about {expires//60} minutes.",ephemeral=True)
+        elapsed=0; tokens=None
+        while elapsed<expires:
+            await asyncio.sleep(interval); elapsed+=interval
+            try: tokens=await simkl.poll_pin(device)
+            except SimklSlowDown: interval+=5; continue
+            except SimklAuthError: break
+            except Exception: log.warning("PIN poll failed.",exc_info=True); continue
+            if tokens: break
+        if not tokens: await i.followup.send("The SIMKL linking code expired or was cancelled. Run /simkl-link again.",ephemeral=True); return
+        access=tokens["access_token"]; refresh=tokens.get("refresh_token"); exp=calculate_token_expiry(tokens.get("expires_in")); aid=None
+        try:
+            settings=await simkl.get_user_settings(access); aid=account_id_from_settings(settings); username=settings.get("user",{}).get("name") or settings.get("account",{}).get("id") or "SIMKL user"
+        except Exception: username="SIMKL user"
+        await storage.link_user(g,uid,access,refresh,username,now_iso(),exp,aid)
+        await i.followup.send(f"Linked as {username} in this server.",ephemeral=True)
+        try: await seed_history(g,uid,{"simkl_token":access,"refresh_token":refresh,"token_expires_at":exp},access)
+        except Exception: log.warning("Initial history seed failed.",exc_info=True)
+    finally: linking_users.discard(key)
+
+@bot.tree.command(name="simkl-unlink",description="Unlink your SIMKL account from this server.")
+async def simkl_unlink(i):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    ok=await storage.unlink_user(g,str(i.user.id)); await i.response.send_message("Your SIMKL account has been unlinked from this server." if ok else "You don't have a linked SIMKL account in this server.",ephemeral=True)
+
+@bot.tree.command(name="simkl-style",description="Choose your personal SIMKL activity embed preferences.")
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
+@app_commands.describe(reset="Reset your personal choices and follow the server default")
+async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,reset: bool | None = None):
+    g=guild_id(i)
+    if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    uid=str(i.user.id)
+    if reset is True:
+        await storage.reset_embed_preferences(uid)
+        p=await prefs(g,uid)
+        await i.response.send_message(f"Your personal settings have been reset. You now follow the server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True)
+        return
+    if style is None and artwork is None and activity_text is None:
+        p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+    await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
+    p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.",ephemeral=True)
+
+@bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
+@app_commands.describe(force_override="Force everyone to use the server settings, ignoring personal choices")
+async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,force_override: bool | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    if style is None and artwork is None and activity_text is None:
+        p=await storage.get_server_embed_preferences(g); forced=await storage.get_server_embed_force_override(g); await i.response.send_message(f"Server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n• Force override: **{'enabled' if forced else 'disabled'}**",ephemeral=True); return
+    await storage.set_server_embed_preferences(g,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None,force_override=force_override)
+    p=await storage.get_server_embed_preferences(g); forced=await storage.get_server_embed_force_override(g)
+    await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nForce override is **{'enabled' if forced else 'disabled'}**.",ephemeral=True)
+
+@bot.tree.command(name="simkl-ratings",description="Configure which ratings are shown in activity embeds.")
+@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
+async def simkl_ratings(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+    uid=str(i.user.id)
+    if show_imdb is None and show_mal is None:
+        p=await prefs(g,uid)
+        await i.response.send_message(
+            f"IMDb ratings: **{'shown' if p.get('show_imdb', True) else 'hidden'}**\n"
+            f"MAL ratings: **{'shown' if p.get('show_mal', True) else 'hidden'}**",
+            ephemeral=True,
+        )
+        return
+    await storage.set_embed_preferences(
+        uid,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
+    )
+    p=await prefs(g,uid)
+    await i.response.send_message(
+        f"Ratings are now configured as IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="simkl-ratings-server",description="(Admin) Configure this server's default rating visibility.")
+@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
+async def simkl_ratings_server(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i):
+        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
+        return
+    if show_imdb is None and show_mal is None:
+        p=await storage.get_server_embed_preferences(g)
+        await i.response.send_message(
+            f"Server ratings: IMDb **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+            f"MAL **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+            ephemeral=True,
+        )
+        return
+    await storage.set_server_embed_preferences(
+        g,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
+    )
+    p=await storage.get_server_embed_preferences(g)
+    await i.response.send_message(
+        f"Server ratings are now IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
+        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="simkl-setchannel",description="(Admin) Set the channel where this server's watch activity is posted.")
+async def simkl_setchannel(i,channel:discord.TextChannel=None):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    target=channel or i.channel; await storage.set_channel(g,target.id); await i.response.send_message(f"Watch activity for this server will now be posted in {target.mention}.",ephemeral=True)
+
+@bot.tree.command(name="simkl-status",description="(Admin) Show this server's configuration and linked accounts.")
+async def simkl_status(i):
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    d=await storage.get_all()
+    sg=(d.get("guilds") or {}).get(str(g),{})
+    users=sg.get("users") or {}
+    allu=d.get("users") or {}
+    ch=sg.get("channel_id")
+    text=f"<#{ch}>" if ch else "**not set**"
+    lines=[]
+    now=datetime.now(timezone.utc)
+    guild=i.guild
+    current_count=0
+    stale_count=0
+    for uid, gu in users.items():
+        try:
+            member=guild.get_member(int(uid))
+            if member is None:
+                member=await guild.fetch_member(int(uid))
+        except (discord.NotFound, discord.Forbidden, ValueError):
+            member=None
+        if member is None:
+            stale_count+=1
+            continue
+        current_count+=1
+        u=allu.get(uid) or {}
+        username=u.get("simkl_username","unknown")
+        expires=u.get("token_expires_at")
+        if expires:
+            remaining=parse_iso(expires)-now
+            if remaining.total_seconds() <= 0:
+                token_state="expired"
+            elif remaining <= timedelta(days=1):
+                token_state=f"expires in {max(int(remaining.total_seconds()//3600),0)}h"
+            else:
+                token_state=f"expires in {remaining.days}d"
+        else:
+            token_state="expiry unknown"
+        last_poll=gu.get("last_poll_at")
+        last_success=gu.get("last_success_at")
+        last_error=gu.get("last_error")
+        failures=max(int(gu.get("consecutive_failures",0) or 0),0)
+        if failures:
+            health_state=f"degraded · {failures} consecutive failure(s)"
+        elif last_success:
+            health_state="healthy"
+        else:
+            health_state="not checked successfully yet"
+        health=f"health: **{health_state}**"
+        health += f" · last poll {last_poll}" if last_poll else " · no poll recorded yet"
+        health += f" · last success {last_success}" if last_success else " · no successful poll yet"
+        if last_error:
+            health += f" · last error: {last_error}"
+        lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**\n  {health}")
+    linked="\n".join(lines) if lines else "No currently linked accounts."
+    tracking_total=len(users)
+    stale_note=f" · **{stale_count} stale record(s)**" if stale_count else ""
+    await i.response.send_message(
+        f"**Posting channel:** {text}\n"
+        f"**Poll interval:** every {POLL_INTERVAL_MINUTES} minute(s)\n"
+        f"**Tracking records:** {tracking_total} · **Current members:** {current_count}{stale_note}\n\n"
+        f"**Linked accounts in this server:**\n{linked}",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="simkl-checknow",description="(Admin) Immediately check this server's SIMKL activity.")
+async def simkl_checknow(i):
+    global last_checknow_at
+    g=guild_id(i)
+    if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
+    if time.monotonic()-last_checknow_at<CHECKNOW_COOLDOWN_SECONDS:
+        await i.response.send_message("Please wait before using /simkl-checknow again.",ephemeral=True); return
+    if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
+    last_checknow_at=time.monotonic()
+    await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
+    posted=await poll_all(g)
+    await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
+
+POLL_RETRY_DELAY_SECONDS=60
+POLL_MAX_RETRY_DELAY_SECONDS=600
+
+@bot.event
+async def on_ready():
+    log.info("Logged in as %s.",bot.user)
+    for g in bot.guilds:
+        await storage.ensure_guild(g.id)
+    poll_task = getattr(bot, "_poll_task", None)
+    if poll_task is None or poll_task.done():
+        bot._poll_task = bot.loop.create_task(polling_loop(), name="simkl-polling")
+
+async def polling_loop():
+    await bot.wait_until_ready()
+    retry_delay=POLL_RETRY_DELAY_SECONDS
+    interval_seconds=POLL_INTERVAL_MINUTES*60
+    next_run=time.monotonic()
+    while not bot.is_closed():
+        try:
+            await poll_all()
+            await send_due_weekly_recaps()
+            retry_delay=POLL_RETRY_DELAY_SECONDS
+            next_run+=interval_seconds
+            sleep_for=max(0,next_run-time.monotonic())
+            if sleep_for:
+                await asyncio.sleep(sleep_for)
+            else:
+                log.warning("Polling cycle exceeded the configured interval; starting the next cycle immediately.")
+                next_run=time.monotonic()
+        except Exception:
+            log.exception("Polling cycle failed; retrying sooner instead of waiting for the full interval.")
+            await asyncio.sleep(retry_delay)
+            retry_delay=min(retry_delay*2,POLL_MAX_RETRY_DELAY_SECONDS)
+            next_run=time.monotonic()
+if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN, log_handler=None)
+
