@@ -1,7 +1,7 @@
 import asyncio, logging, os, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -28,7 +28,12 @@ SIMKL_CLIENT_ID=os.getenv("SIMKL_CLIENT_ID")
 TMDB_API_KEY=os.getenv("TMDB_API_KEY")
 MDBLIST_API_KEY=os.getenv("MDBLIST_API_KEY")
 POLL_INTERVAL_MINUTES=positive_int_env("POLL_INTERVAL_MINUTES", 60)
-STATISTICS_TIMEZONE=ZoneInfo("Asia/Singapore")
+DEFAULT_TIMEZONE_NAME=os.getenv("SIMKL_DEFAULT_TIMEZONE", "Asia/Singapore").strip() or "Asia/Singapore"
+try:
+    ZoneInfo(DEFAULT_TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    log_placeholder = True
+    DEFAULT_TIMEZONE_NAME = "UTC"
 POLL_CONCURRENCY=positive_int_env("POLL_CONCURRENCY", 5)
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
@@ -42,6 +47,8 @@ MEDIA_STYLES={"shows":(0x3498DB,"📺 TV"),"anime":(0xE91E63,"🌸 Anime"),"movi
 HISTORY_FETCH_TIMEOUT_SECONDS=120; CHECKNOW_COOLDOWN_SECONDS=30
 poll_lock=asyncio.Lock(); last_checknow_at=0.0; linking_users=set(); profile_lookup_attempted=set()
 logging.basicConfig(level=logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s"); log=logging.getLogger("simkl-bot")
+if DEFAULT_TIMEZONE_NAME == "UTC" and os.getenv("SIMKL_DEFAULT_TIMEZONE"):
+    log.warning("Invalid SIMKL_DEFAULT_TIMEZONE=%r; falling back to UTC.", os.getenv("SIMKL_DEFAULT_TIMEZONE"))
 simkl=SimklClient(SIMKL_CLIENT_ID); tmdb=TmdbClient(TMDB_API_KEY); mdblist=MdbListClient(MDBLIST_API_KEY) if MDBLIST_API_KEY else None; imdb=ImdbClient()
 if mdblist is not None:
     log.info("MDBList IMDb ratings enabled.")
@@ -764,7 +771,7 @@ async def poll_all(g=None):
             len(users),len(targets),posted,duration,POLL_CONCURRENCY
         )
         return posted
-def calculate_streaks(watch_dates):
+def calculate_streaks(watch_dates, timezone_name=DEFAULT_TIMEZONE_NAME):
     dates=set()
     for value in (watch_dates or {}).keys():
         try:
@@ -773,7 +780,11 @@ def calculate_streaks(watch_dates):
             continue
     if not dates:
         return 0,0
-    today=datetime.now(STATISTICS_TIMEZONE).date()
+    try:
+        local_timezone=ZoneInfo(timezone_name)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        local_timezone=ZoneInfo(DEFAULT_TIMEZONE_NAME)
+    today=datetime.now(local_timezone).date()
     # Keep today's streak alive until the end of the local calendar day.
     # If the user has not watched anything today yet, yesterday's streak
     # remains active instead of resetting immediately at midnight.
@@ -795,8 +806,8 @@ def calculate_streaks(watch_dates):
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
 
-def format_watch_stats(statistics):
-    current,longest=calculate_streaks(statistics.get("watch_dates"))
+async def format_watch_stats(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
+    current,longest=calculate_streaks(statistics.get("watch_dates"), timezone_name)
     episodes=int(statistics.get("episodes_watched",0))
     movies=int(statistics.get("movies_watched",0))
     anime_episodes=int(statistics.get("anime_episodes_watched",0))
@@ -813,6 +824,50 @@ ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
 
+@bot.tree.command(name="simkl-timezone",description="(Admin) Set or view the server timezone.")
+@app_commands.describe(timezone="IANA timezone such as Asia/Singapore, or 'reset' to use the environment default")
+async def simkl_timezone(i, timezone: str | None = None):
+    g=guild_id(i)
+    if not g or not is_admin(i):
+        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
+        return
+
+    if timezone is None or not timezone.strip():
+        info=await storage.get_timezone(g)
+        now=datetime.now(ZoneInfo(info["name"]))
+        source_label={"server":"Server setting","environment":"Environment default","built-in":"Built-in default"}.get(info["source"],"Default")
+        await i.response.send_message(
+            f"🕐 **Timezone:** {info['name']}\\n**Source:** {source_label}\\n**Current local time:** {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            ephemeral=True,
+        )
+        return
+
+    value=timezone.strip()
+    if value.lower() == "reset":
+        await storage.set_timezone(g, None)
+        info=await storage.get_timezone(g)
+        await i.response.send_message(
+            f"Reset the server timezone to **{info['name']}** (environment/default setting).",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        ZoneInfo(value)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        await i.response.send_message(
+            f"❌ **{value}** is not a valid IANA timezone. Examples: **Asia/Singapore**, **America/New_York**, **Europe/London**.",
+            ephemeral=True,
+        )
+        return
+
+    await storage.set_timezone(g, value)
+    now=datetime.now(ZoneInfo(value))
+    await i.response.send_message(
+        f"Set the server timezone to **{value}**.\\nCurrent local time: **{now.strftime('%Y-%m-%d %H:%M:%S')}**",
+        ephemeral=True,
+    )
+
 @bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
 @app_commands.describe(user="Optional server member to view")
 async def simkl_stats(i,user: discord.Member | None = None):
@@ -823,7 +878,8 @@ async def simkl_stats(i,user: discord.Member | None = None):
     stats=await storage.get_statistics(g,str(target.id))
     if not stats.get("watch_dates") and not stats.get("titles"):
         await i.response.send_message(f"No watch statistics have been recorded for {target.mention} in this server yet.",ephemeral=True); return
-    embed=discord.Embed(title=f"{target.display_name}'s Watch Stats",description=format_watch_stats(stats),color=0x5865F2)
+    timezone_info=await storage.get_timezone(g)
+    embed=discord.Embed(title=f"{target.display_name}'s Watch Stats",description=await format_watch_stats(stats, timezone_info["name"]),color=0x5865F2)
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.set_footer(text="SIMKLTrackerBot · All-time statistics")
     await i.response.send_message(embed=embed)
@@ -837,7 +893,8 @@ async def simkl_streak(i,user: discord.Member | None = None):
         await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     target=user or i.user
     stats=await storage.get_statistics(g,str(target.id))
-    current,longest=calculate_streaks(stats.get("watch_dates"))
+    timezone_info=await storage.get_timezone(g)
+    current,longest=calculate_streaks(stats.get("watch_dates"), timezone_info["name"])
     embed=discord.Embed(title=f"🔥 {target.display_name}'s Watch Streak",description=f"Current streak: **{current} day{'s' if current != 1 else ''}**\nLongest streak: **{longest} day{'s' if longest != 1 else ''}**",color=0xF1C40F)
     embed.set_thumbnail(url=target.display_avatar.url)
     await i.response.send_message(embed=embed)
