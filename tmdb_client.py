@@ -404,8 +404,9 @@ class TmdbClient:
         if tvdb_id in self._tvmaze_show_cache:
             return self._tvmaze_show_cache[tvdb_id]
 
-        # TVMaze lookup redirects to the matched show page instead of returning JSON.
-        # Extract the show ID from Location, then fetch the JSON resource directly.
+        # TVMaze documents that this lookup returns an HTTP redirect to the
+        # matched show page, rather than JSON. Keep redirects disabled so we
+        # can extract the show ID without accidentally parsing the HTML page.
         try:
             session = await self._get_session()
             async with session.get(
@@ -413,10 +414,16 @@ class TmdbClient:
                 params={"thetvdb": tvdb_id},
                 allow_redirects=False,
             ) as resp:
+                location = resp.headers.get("Location") or ""
+                log.info(
+                    "TVMaze TVDB lookup: TVDB=%s HTTP=%s Location=%r.",
+                    tvdb_id,
+                    resp.status,
+                    location,
+                )
                 if resp.status not in (301, 302, 303, 307, 308):
                     self._tvmaze_show_cache[tvdb_id] = None
                     return None
-                location = resp.headers.get("Location") or ""
         except (aiohttp.ClientError, TimeoutError):
             log.warning(
                 "TVMaze show lookup failed for TVDB=%s.",
@@ -645,69 +652,9 @@ class TmdbClient:
                 )
                 return result
 
-        # --------------------------------------------------------------
-        # Broader fallback:
-        #
-        # Look through TMDB's seasons and find an episode whose
-        # number/title matches what SIMKL gave us.
-        # --------------------------------------------------------------
-
-        for current_series_id in candidate_series_ids:
-            series_data = await self._get_series_details(
-                current_series_id,
-            )
-
-            if not series_data:
-                continue
-
-            seasons = series_data.get("seasons") or []
-
-            for season in seasons:
-                season_number = season.get("season_number")
-
-                try:
-                    season_number = int(season_number)
-                except (TypeError, ValueError):
-                    continue
-
-                if season_number < 0:
-                    continue
-
-                season_data = await self._get_season_details(
-                    current_series_id,
-                    season_number,
-                )
-
-                if not season_data:
-                    continue
-
-                episodes = (
-                    season_data.get("episodes")
-                    or []
-                )
-
-                for episode in episodes:
-                    try:
-                        tmdb_episode_number = int(
-                            episode.get("episode_number")
-                        )
-                    except (TypeError, ValueError):
-                        continue
-
-                    if (
-                        tmdb_episode_number
-                        != int(episode_number)
-                    ):
-                        continue
-
-                    result = {
-                        "series_id": current_series_id,
-                        "season_number": season_number,
-                        "episode_number": episode_number,
-                        "episode": episode,
-                    }
-                    self._anime_episode_cache[cache_key] = result
-                    return result
+        # Do not search arbitrary TMDB seasons here. If the exact season/episode
+        # was not found, returning None is safer than reusing S01 (or another
+        # season) and producing a plausible-looking but incorrect notification.
 
         self._anime_episode_cache[cache_key] = None
         return None
