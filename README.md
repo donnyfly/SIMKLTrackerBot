@@ -59,9 +59,23 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-ratings-server` | Manage Server | Set the server-wide rating visibility defaults |
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-timezone` | Manage Server | View or set the server timezone used for dates, statistics, and streaks |
+| `/simkl-weekly-recap` | Manage Server | Post a weekly watch recap; use the period option to test it immediately |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
-### Watch statistics
+### Weekly Recaps
+
+Weekly recaps are automatically posted to the configured SIMKL activity channel every **Monday at 09:00** in the server's configured timezone. The automatic recap covers the previous Monday through Sunday.
+
+Administrators can test the feature immediately with:
+
+```text
+/simkl-weekly-recap period: Current week
+/simkl-weekly-recap period: Previous week
+```
+
+The test command posts the recap to the normal activity channel, so it tests the same posting path used by the automatic recap. The recap includes total watches, episode/movie/anime breakdowns, active days, active users, and the top watchers with Discord mentions.
+
+## Watch statistics
 
 The bot keeps per-server watch statistics locally in `data/store.json`. Statistics are updated when activity is successfully processed and are seeded from existing watch history when a user first links their SIMKL account.
 
