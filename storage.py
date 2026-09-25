@@ -501,6 +501,15 @@ class Storage:
             self._dirty = True
         await self.flush()
 
+    async def reset_server_embed_preferences(self, guild_id: int | str) -> None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            guild["embed_preferences"] = copy.deepcopy(DEFAULT_EMBED_PREFERENCES)
+            guild["force_embed_preferences"] = False
+            self._dirty = True
+        await self.flush()
+
     async def get_server_embed_force_override(self, guild_id: int | str) -> bool:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
