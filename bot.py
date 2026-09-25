@@ -1,6 +1,5 @@
 import asyncio, logging, os, time
 from collections import defaultdict
-import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import discord
@@ -8,6 +7,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
+from achievements import ACHIEVEMENTS, all_achievements
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -379,6 +379,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
     for media_type,title,key,watched_at in seeded_stats:
         await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False)
     await storage.flush()
+    await evaluate_achievements(g,uid)
     return token
 
 async def resolve_member(g,uid):
@@ -452,6 +453,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             pending.update(watch_times)
             count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
+    if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
 async def process_movies(ch,g,uid,name,member,items,since,profile):
@@ -519,6 +521,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         pending[k]=wr
         count+=1
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
+    if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
 async def process_status(ch,g,uid,name,member,t,items,profile):
@@ -772,6 +775,67 @@ async def poll_all(g=None):
             len(users),len(targets),posted,duration,POLL_CONCURRENCY
         )
         return posted
+
+
+def achievement_progress(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
+    episodes=int(statistics.get("episodes_watched",0))
+    movies=int(statistics.get("movies_watched",0))
+    anime_episodes=int(statistics.get("anime_episodes_watched",0))
+    total=episodes+movies
+    _,longest=calculate_streaks(statistics.get("watch_dates"),timezone_name)
+    return {
+        "total": total,
+        "episodes": episodes,
+        "movies": movies,
+        "anime_episodes": anime_episodes,
+        "streak": longest,
+    }
+
+
+async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
+    """Unlock qualifying achievements and optionally announce new live unlocks."""
+    stats=await storage.get_statistics(g,uid)
+    timezone_info=await storage.get_timezone(g)
+    progress=achievement_progress(stats,timezone_info["name"])
+    unlocked=await storage.get_achievements(g,uid)
+    newly_unlocked=[]
+    now=datetime.now(timezone.utc).isoformat()
+
+    for achievement_id, achievement in all_achievements():
+        if achievement_id in unlocked:
+            continue
+        if force_id is not None:
+            if achievement_id != force_id:
+                continue
+            qualifies=True
+        else:
+            qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
+        if qualifies and await storage.unlock_achievement(g,uid,achievement_id,now,flush=False):
+            newly_unlocked.append(achievement_id)
+
+    if newly_unlocked:
+        await storage.flush()
+
+    if newly_unlocked and notify_channel is not None:
+        guild=bot.get_guild(int(g))
+        member=guild.get_member(int(uid)) if guild else None
+        mention=member.mention if member else f"<@{uid}>"
+        names=[f"{ACHIEVEMENTS[aid]['emoji']} **{ACHIEVEMENTS[aid]['name']}**" for aid in newly_unlocked]
+        embed=discord.Embed(
+            title="🏆 Achievement Unlocked!",
+            description=f"{mention} unlocked:\n" + "\n".join(names),
+            color=0xF1C40F,
+        )
+        for aid in newly_unlocked:
+            embed.add_field(
+                name=ACHIEVEMENTS[aid]["name"],
+                value=ACHIEVEMENTS[aid]["description"],
+                inline=False,
+            )
+        await notify_channel.send(embed=embed)
+
+    return newly_unlocked
+
 def calculate_streaks(watch_dates, timezone_name=DEFAULT_TIMEZONE_NAME):
     dates=set()
     for value in (watch_dates or {}).keys():
@@ -993,6 +1057,72 @@ async def simkl_weekly_recap(i, period: app_commands.Choice[str] | None = None):
     await i.response.defer(ephemeral=True)
     await channel.send(embed=await generate_weekly_recap(i.guild,selected))
     await i.followup.send(f"Posted the **{'current' if selected == 'current' else 'previous'} week** recap in {channel.mention}.",ephemeral=True)
+
+
+ACHIEVEMENT_CHOICES=[
+    app_commands.Choice(name=f"{a['emoji']} {a['name']}",value=aid)
+    for aid,a in all_achievements()
+]
+
+@bot.tree.command(name="simkl-achievements",description="Show your SIMKL achievements.")
+@app_commands.describe(user="Optional server member to view")
+async def simkl_achievements(i,user: discord.Member | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+    target=user or i.user
+    await evaluate_achievements(g,str(target.id))
+    unlocked=await storage.get_achievements(g,str(target.id))
+    stats=await storage.get_statistics(g,str(target.id))
+    timezone_info=await storage.get_timezone(g)
+    progress=achievement_progress(stats,timezone_info["name"])
+
+    lines=[]
+    for aid,achievement in all_achievements():
+        if aid in unlocked:
+            stamp=unlocked[aid].get("unlocked_at")
+            when=""
+            if stamp:
+                try:
+                    dt=datetime.fromisoformat(stamp.replace("Z","+00:00"))
+                    when=f" — <t:{int(dt.timestamp())}:d>"
+                except (TypeError,ValueError):
+                    pass
+            lines.append(f"{achievement['emoji']} **{achievement['name']}**{when}\n{achievement['description']}")
+        else:
+            current=progress.get(achievement["category"],0)
+            lines.append(f"🔒 **{achievement['name']}** — {min(current,achievement['threshold']):,}/{achievement['threshold']:,}\n{achievement['description']}")
+
+    embed=discord.Embed(
+        title=f"🏆 {target.display_name}'s Achievements",
+        description="\n\n".join(lines),
+        color=0xF1C40F,
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text=f"{len(unlocked)}/{len(ACHIEVEMENTS)} unlocked")
+    await i.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="simkl-achievement-test",description="(Admin) Test-unlock a SIMKL achievement.")
+@app_commands.choices(achievement=ACHIEVEMENT_CHOICES)
+@app_commands.describe(achievement="Achievement to unlock for yourself")
+async def simkl_achievement_test(i,achievement: app_commands.Choice[str]):
+    if not guild_id(i) or not is_admin(i):
+        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
+        return
+    g=guild_id(i)
+    unlocked=await evaluate_achievements(g,str(i.user.id),force_id=achievement.value)
+    if not unlocked:
+        await i.response.send_message("That achievement is already unlocked for you.",ephemeral=True)
+        return
+    a=ACHIEVEMENTS[achievement.value]
+    await i.response.send_message(
+        f"🧪 Test unlocked {a['emoji']} **{a['name']}** for you. "
+        "This does not change your watch statistics.",
+        ephemeral=True,
+    )
+
 @bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
 @app_commands.describe(user="Optional server member to view")
 async def simkl_stats(i,user: discord.Member | None = None):
