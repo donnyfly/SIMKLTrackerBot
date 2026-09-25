@@ -592,7 +592,14 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                 logo=await tmdb.get_movie_logo(tmdb_movie_id)
             except Exception:
                 log.warning("TMDB movie logo lookup failed for %s.", title, exc_info=True)
-        e=build_embed("movies",desc,dt,name,member,image,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,logo,p)
+        activity_url = simkl_title_url("movies", sid, ids.get("slug"))
+        if anime_movie and tmdb_movie_id is not None:
+            # Anime movie items can originate from SIMKL's /anime catalog and
+            # therefore carry an anime URL even after we resolve them to the
+            # canonical TMDB movie. Use SIMKL's TMDB redirect so the activity
+            # opens the movie entry instead of the anime entry.
+            activity_url = simkl_redirect_url(tmdb_movie_id, "movie", title)
+        e=build_embed("movies",desc,dt,name,member,image,profile,title,activity_url,poster,logo,p)
         if not await send_embed(ch,e,"movie"):
             ok=False
             continue
