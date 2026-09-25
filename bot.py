@@ -110,6 +110,64 @@ async def resolve_anime_tmdb_id(ids):
             return resolved
     return ids.get("tmdb")
 
+
+async def is_anime_movie_item(item):
+    """Return True when a SIMKL anime item represents a movie."""
+
+    if item.get("movie") is not None:
+        return True
+
+    show = item.get("show") or {}
+    if show.get("type") == "movie" or show.get("anime_type") == "movie":
+        return True
+
+    # Anime movies can arrive from /sync/all-items/anime as a show object
+    # with a TMDB movie ID and no season data. Confirm the TMDB media type
+    # instead of treating the item as a TV series.
+    if item.get("seasons"):
+        return False
+
+    tmdb_id=(show.get("ids") or {}).get("tmdb")
+    if tmdb_id is None:
+        return False
+
+    try:
+        movie_title=await tmdb.get_movie_title(tmdb_id)
+    except Exception:
+        log.warning(
+            "TMDB anime movie classification failed for %s (TMDB=%s).",
+            show.get("title") or "Untitled",
+            tmdb_id,
+            exc_info=True,
+        )
+        return False
+
+    if movie_title:
+        log.info(
+            "Classified anime item as movie: %s (TMDB=%s).",
+            show.get("title") or "Untitled",
+            tmdb_id,
+        )
+        return True
+
+    return False
+
+
+async def split_anime_items(items):
+    """Separate anime TV entries from anime movies for notification processing."""
+
+    shows=[]
+    movies=[]
+    for item in items or []:
+        if await is_anime_movie_item(item):
+            movie_item=dict(item)
+            movie_item["movie"]=dict(item.get("movie") or item.get("show") or {})
+            movie_item["movie"]["type"]="movie"
+            movies.append(movie_item)
+        else:
+            shows.append(item)
+    return shows,movies
+
 def iter_show_episodes(t,items):
     for item in items or []:
         show=item.get("show") or {}; ids=show.get("ids") or {}; sid=ids.get("simkl")
@@ -351,7 +409,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                     logo=await tmdb.get_tv_logo(anime_tmdb_id) if anime_tmdb_id is not None else None
                 except Exception:
                     log.warning("TMDB TV logo lookup failed for %s.", title, exc_info=True)
-            e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,logo,p)
+            e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image,profile,title,url,fallback,logo,p)
             if not await send_embed(ch,e,"episode"):
                 ok=False
                 continue
@@ -419,7 +477,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                 logo=await tmdb.get_movie_logo(ids["tmdb"])
             except Exception:
                 log.warning("TMDB movie logo lookup failed for %s.", title, exc_info=True)
-        e=build_embed("movies",desc,dt,name,member,image or poster,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,logo,p)
+        e=build_embed("movies",desc,dt,name,member,image,profile,title,simkl_title_url("movies",sid,ids.get("slug")),poster,logo,p)
         if not await send_embed(ch,e,"movie"):
             ok=False
             continue
@@ -501,7 +559,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 logo=await (tmdb.get_movie_logo(ids["tmdb"]) if t=="movies" else tmdb.get_tv_logo(ids["tmdb"]))
             except Exception:
                 log.warning("TMDB title logo lookup failed for %s.", title, exc_info=True)
-        e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image or poster,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p)
+        e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p)
         if not await send_embed(ch,e,status):
             ok=False
             continue
@@ -577,8 +635,28 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             continue
         try:
             items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
-            sc,so=await process_status(ch,g,uid,name,member,t,items,profile)
-            wc,wo=await (process_movies(ch,g,uid,name,member,items,sdt,profile) if t=="movies" else process_shows(ch,g,uid,name,member,t,items,profile))
+
+            if t=="anime":
+                anime_shows,anime_movies=await split_anime_items(items)
+                sc,so=await process_status(
+                    ch,g,uid,name,member,t,anime_shows,profile
+                )
+                show_count,show_ok=await process_shows(
+                    ch,g,uid,name,member,t,anime_shows,profile
+                )
+                movie_count,movie_ok=await process_movies(
+                    ch,g,uid,name,member,anime_movies,sdt,profile
+                )
+                wc=show_count+movie_count
+                wo=show_ok and movie_ok
+            else:
+                sc,so=await process_status(
+                    ch,g,uid,name,member,t,items,profile
+                )
+                wc,wo=await process_movies(
+                    ch,g,uid,name,member,items,sdt,profile
+                )
+
             if so and wo:
                 await storage.update_last_checked(g,uid,t,to_iso(parse_iso(stamp)))
                 posted+=wc
