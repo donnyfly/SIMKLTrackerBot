@@ -54,6 +54,7 @@ def _default_guild() -> dict:
         "embed_preferences": copy.deepcopy(DEFAULT_EMBED_PREFERENCES),
         "force_embed_preferences": False,
         "timezone": None,
+        "weekly_recap_last_sent": None,
         "users": {},
     }
 
@@ -222,6 +223,7 @@ def _normalise_guild(guild: dict) -> None:
     guild.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
     guild.setdefault("force_embed_preferences", False)
     guild.setdefault("timezone", None)
+    guild.setdefault("weekly_recap_last_sent", None)
     if guild.get("timezone") is not None and not isinstance(guild.get("timezone"), str):
         guild["timezone"] = None
     if not isinstance(guild["embed_preferences"], dict):
@@ -441,6 +443,20 @@ class Storage:
             self._migrate_legacy_guild_locked(str(guild_id))
             guild = self._guild(guild_id, create=True)
             guild["timezone"] = timezone_name.strip() if timezone_name else None
+            self._dirty = True
+        await self.flush()
+
+    async def get_weekly_recap_last_sent(self, guild_id: int | str) -> str | None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            return guild.get("weekly_recap_last_sent")
+
+    async def set_weekly_recap_last_sent(self, guild_id: int | str, week_key: str) -> None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            guild["weekly_recap_last_sent"] = week_key
             self._dirty = True
         await self.flush()
 
