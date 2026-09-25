@@ -82,6 +82,17 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
+def _default_statistics() -> dict:
+    return {
+        "episodes_watched": 0,
+        "movies_watched": 0,
+        "anime_episodes_watched": 0,
+        "anime_movies_watched": 0,
+        "watch_dates": {},
+        "titles": {},
+    }
+
+
 def _default_activity_state() -> dict:
     return {
         "statuses": {},
@@ -101,6 +112,7 @@ def _default_guild_user(start_time_iso: str | None = None) -> dict:
         },
         "announced": set(),
         "activity_state": _default_activity_state(),
+        "statistics": _default_statistics(),
         "last_poll_at": None,
         "last_success_at": None,
         "last_error": None,
@@ -146,6 +158,17 @@ def _normalise_guild_user(user: dict) -> None:
         user["last_checked"].setdefault(media_type, EPOCH_ISO)
 
     user.setdefault("activity_state", _default_activity_state())
+    user.setdefault("statistics", _default_statistics())
+    stats = user["statistics"]
+    if not isinstance(stats, dict):
+        stats = _default_statistics()
+        user["statistics"] = stats
+    for key, default in _default_statistics().items():
+        stats.setdefault(key, copy.deepcopy(default))
+    if not isinstance(stats.get("watch_dates"), dict):
+        stats["watch_dates"] = {}
+    if not isinstance(stats.get("titles"), dict):
+        stats["titles"] = {}
     state = user["activity_state"]
     if not isinstance(state, dict):
         state = _default_activity_state()
@@ -288,6 +311,9 @@ class Storage:
             guild_user["announced"] = set(old_user.get("announced", []))
             guild_user["activity_state"] = copy.deepcopy(
                 old_user.get("activity_state") or _default_activity_state()
+            )
+            guild_user["statistics"] = copy.deepcopy(
+                old_user.get("statistics") or _default_statistics()
             )
             guild["users"][uid] = guild_user
 
@@ -461,6 +487,61 @@ class Storage:
         if flush:
             await self.flush()
 
+    async def get_statistics(self, guild_id: str | int, discord_user_id: str) -> dict:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user = self._guild_user(guild_id, discord_user_id)
+            return copy.deepcopy(user["statistics"]) if user else _default_statistics()
+
+    async def record_watch(
+        self,
+        guild_id: str | int,
+        discord_user_id: str,
+        media_type: str,
+        title: str,
+        item_key: str,
+        watched_at: str,
+        flush: bool = True,
+    ) -> None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user = self._guild_user(guild_id, discord_user_id)
+            if not user:
+                return
+            stats = user["statistics"]
+            if media_type == "anime_episode":
+                stats["episodes_watched"] += 1
+                stats["anime_episodes_watched"] += 1
+                category = "anime_episodes"
+            elif media_type == "anime_movie":
+                stats["movies_watched"] += 1
+                stats["anime_movies_watched"] += 1
+                category = "anime_movies"
+            elif media_type == "movie":
+                stats["movies_watched"] += 1
+                category = "movies"
+            else:
+                stats["episodes_watched"] += 1
+                category = "episodes"
+
+            day = watched_at[:10] if watched_at else None
+            if day:
+                daily = stats["watch_dates"].setdefault(day, {})
+                daily[category] = int(daily.get(category, 0)) + 1
+                daily["total"] = int(daily.get("total", 0)) + 1
+
+            title_record = stats["titles"].setdefault(
+                item_key,
+                {"title": title or "Untitled", "type": media_type, "count": 0, "last_watched": None},
+            )
+            title_record["title"] = title or title_record.get("title") or "Untitled"
+            title_record["type"] = media_type
+            title_record["count"] = int(title_record.get("count", 0)) + 1
+            title_record["last_watched"] = watched_at
+            self._dirty = True
+        if flush:
+            await self.flush()
+
     async def get_last_checked(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
@@ -596,6 +677,23 @@ class Storage:
             user["token_expires_at"] = token_expires_at
             self._dirty = True
         await self.flush()
+
+    async def get_guild_statistics(self, guild_id: str | int) -> list[dict]:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id)
+            if not guild:
+                return []
+            results = []
+            for uid, user in guild["users"].items():
+                _normalise_guild_user(user)
+                global_user = self._user(uid) or {}
+                results.append({
+                    "discord_user_id": uid,
+                    "simkl_username": global_user.get("simkl_username", "unknown"),
+                    "statistics": copy.deepcopy(user["statistics"]),
+                })
+            return results
 
     async def set_account_id(self, discord_user_id: str, simkl_account_id: int | str) -> None:
         async with _lock:
