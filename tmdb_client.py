@@ -602,6 +602,29 @@ class TmdbClient:
                 if not episode:
                     continue
 
+                imdb_id = (episode.get("externals") or {}).get("imdb")
+
+                # TVMaze can resolve the episode correctly but may not expose
+                # an IMDb ID. Enrich the result from TMDB when possible so
+                # anime episodes keep their IMDb ratings without replacing
+                # TVMaze's more reliable title/artwork data.
+                if not imdb_id:
+                    for current_series_id in candidate_series_ids:
+                        tmdb_episode = await self.get_episode_details(
+                            current_series_id,
+                            season_number,
+                            episode_number,
+                        )
+                        if not tmdb_episode:
+                            continue
+                        imdb_id = (
+                            (tmdb_episode.get("external_ids") or {}).get(
+                                "imdb_id"
+                            )
+                        )
+                        if imdb_id:
+                            break
+
                 result = {
                     "series_id": None,
                     "season_number": season_number,
@@ -609,9 +632,7 @@ class TmdbClient:
                     "episode": {
                         "name": episode.get("name"),
                         "external_ids": {
-                            "imdb_id": (
-                                (episode.get("externals") or {}).get("imdb")
-                            ),
+                            "imdb_id": imdb_id,
                         },
                     },
                     "still_url": (
