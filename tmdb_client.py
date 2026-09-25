@@ -67,6 +67,12 @@ class TmdbClient:
             dict | None,
         ] = {}
 
+        # Cache English-localized anime title lookups.
+        self._tv_title_cache: dict[
+            tuple[int, bool],
+            str | None,
+        ] = {}
+
         # Cache the result of the more expensive anime episode resolver.
         self._anime_episode_cache: dict[
             tuple,
@@ -623,20 +629,46 @@ class TmdbClient:
     async def get_tv_title(
         self,
         series_id,
+        prefer_english: bool = False,
     ) -> str | None:
-        """Return the TMDB English-localized TV series title."""
+        """Return the TV series title, optionally preferring an English translation."""
 
         try:
             series_id = int(series_id)
         except (TypeError, ValueError):
             return None
 
+        cache_key = (series_id, bool(prefer_english))
+        if cache_key in self._tv_title_cache:
+            return self._tv_title_cache[cache_key]
+
         data = await self._get_series_details(series_id)
         if not data:
+            self._tv_title_cache[cache_key] = None
             return None
 
         title = data.get("name")
-        return str(title) if title else None
+
+        if prefer_english:
+            translations = await self._get_json(
+                f"{API_BASE}/tv/{series_id}/translations",
+            )
+            if translations:
+                for translation in translations.get("translations") or []:
+                    if (
+                        translation.get("iso_639_1") == "en"
+                        and translation.get("iso_3166_1") == "US"
+                    ):
+                        translated_title = (
+                            (translation.get("data") or {}).get("name")
+                        )
+                        if translated_title:
+                            title = translated_title
+                        break
+
+        result = str(title) if title else None
+        self._tv_title_cache[cache_key] = result
+        return result
 
     # ------------------------------------------------------------------
     # TV backdrops
