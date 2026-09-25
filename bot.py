@@ -201,8 +201,12 @@ def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,po
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
     e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
-    selected=poster if p["artwork"]=="poster" else image
-    selected=selected or poster or image
+    if p["artwork"]=="poster":
+        selected=poster
+    elif p["artwork"]=="backdrop":
+        selected=image
+    else:
+        selected=image or poster
     if selected:
         if p["style"]=="minimal":
             e.set_thumbnail(url=selected)
@@ -369,10 +373,36 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         if k in announced and not rw: continue
         if k not in announced and dt<=since: continue
         title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
+        anime_movie = bool(
+            ids.get("mal")
+            or m.get("anime_type") == "movie"
+            or m.get("type") == "movie"
+        )
         if ids.get("tmdb") is not None:
-            try: image=await tmdb.get_movie_backdrop(ids["tmdb"])
-            except Exception: log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
-        anime_movie = bool(ids.get("mal") or m.get("anime_type"))
+            try:
+                image=await tmdb.get_movie_backdrop(ids["tmdb"])
+                if p["artwork"] == "backdrop" and image is None:
+                    log.info(
+                        "No TMDB movie backdrop available for %s (TMDB=%s).",
+                        title,
+                        ids["tmdb"],
+                    )
+            except Exception:
+                log.warning("TMDB movie backdrop lookup failed for %s.", title, exc_info=True)
+        if anime_movie and ids.get("tmdb") is not None:
+            try:
+                english_title=await tmdb.get_movie_title(
+                    ids["tmdb"],
+                    prefer_english=True,
+                )
+                if english_title:
+                    title=english_title
+            except Exception:
+                log.warning(
+                    "TMDB anime movie title lookup failed for %s.",
+                    title,
+                    exc_info=True,
+                )
         movie_ratings = await get_movie_ratings(ids.get("tmdb")) if anime_movie else None
         imdb_rating = movie_ratings.get("imdb") if movie_ratings else await get_imdb_rating("movie", ids.get("tmdb"))
         mal_rating = movie_ratings.get("mal") if movie_ratings else None
@@ -425,6 +455,18 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         if t=="movies" and status=="completed":
             successful[key]=status
             continue
+
+        anime_movie = (
+            t=="anime"
+            and (
+                m.get("type") == "movie"
+                or m.get("anime_type") == "movie"
+            )
+        )
+        if anime_movie:
+            successful[key]=status
+            continue
+
         title=m.get("title") or "Untitled"
         if t=="anime":
             try:
