@@ -9,11 +9,14 @@ import asyncio
 import copy
 import json
 import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
 
 DEFAULT_POLL_INTERVAL_MINUTES = 60
 EPOCH_ISO = "1970-01-01T00:00:00Z"
+STATISTICS_TIMEZONE = ZoneInfo("Asia/Singapore")
 
 _lock = asyncio.Lock()
 _write_lock = asyncio.Lock()
@@ -524,7 +527,15 @@ class Storage:
                 stats["episodes_watched"] += 1
                 category = "episodes"
 
-            day = watched_at[:10] if watched_at else None
+            day = None
+            if watched_at:
+                try:
+                    watched_dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                    if watched_dt.tzinfo is None:
+                        watched_dt = watched_dt.replace(tzinfo=timezone.utc)
+                    day = watched_dt.astimezone(STATISTICS_TIMEZONE).date().isoformat()
+                except (TypeError, ValueError):
+                    day = watched_at[:10]
             if day:
                 daily = stats["watch_dates"].setdefault(day, {})
                 daily[category] = int(daily.get(category, 0)) + 1
