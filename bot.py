@@ -62,6 +62,17 @@ class SimklBot(discord.Client):
         super().__init__(intents=discord.Intents.default()); self.tree=app_commands.CommandTree(self)
     async def setup_hook(self):
         await self.tree.sync()
+
+        dev_guild_id = os.getenv("DISCORD_DEV_GUILD_ID", "").strip()
+        if dev_guild_id:
+            try:
+                dev_guild = discord.Object(id=int(dev_guild_id))
+                self.tree.copy_global_to(guild=dev_guild)
+                await self.tree.sync(guild=dev_guild)
+                log.info("Slash commands synced to development guild %s.", dev_guild_id)
+            except ValueError:
+                log.warning("Invalid DISCORD_DEV_GUILD_ID=%r; expected a Discord guild ID.", dev_guild_id)
+
         await imdb.start()
         log.info("Slash commands synced globally.")
     async def close(self):
@@ -486,7 +497,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             except Exception:
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
                 image,ep_title,episode_imdb_id=None,grp[0].get("episode_title"),None
-            label=format_episode_display(sn,grp[0]["episode_number"],grp[-1]["episode_number"],p.get("episode_code", True)); verb=kind.capitalize()
+            label=format_episode_display(sn,grp[0]["episode_number"],grp[-1]["episode_number"],p.get("episode_code", False)); verb=kind.capitalize()
             rating = await imdb.get_rating(episode_imdb_id) if len(grp) == 1 and p.get("show_imdb", True) else None
             desc=f"{verb} `{label}`"
             if p["activity_text"]=="detailed": desc=f"{verb} `{label}` of **{title}**"
@@ -2142,7 +2153,7 @@ async def simkl_unlink(i):
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     ok=await storage.unlink_user(g,str(i.user.id)); await i.response.send_message("Your SIMKL account has been unlinked from this server." if ok else "You don't have a linked SIMKL account in this server.",ephemeral=True)
 
-@bot.tree.command(name="simkl-style",description="Choose your personal SIMKL watch activity embed preferences.")
+@bot.tree.command(name="simkl-style",description="Choose your personal style for episode and movie watch activities.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
 @app_commands.describe(reset="Reset your personal choices and follow the server default")
 async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,reset: bool | None = None):
@@ -2159,7 +2170,7 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
     await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None,episode_code=(episode_format.value == "true") if episode_format else None)
     p=await prefs(g,uid); await i.response.send_message(f"Your personal watch activity settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nEpisode numbers use **{'code format' if p.get('episode_code', True) else 'text format'}**.\nThese settings override the server default.\nStatus activities always use posters.",ephemeral=True)
 
-@bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL watch activity embed style.")
+@bot.tree.command(name="simkl-style-server",description="(Admin) Set the default style for episode and movie watch activities.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
 @app_commands.describe(force_override="Force everyone to use the server settings, ignoring personal choices")
 async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,force_override: bool | None = None):
