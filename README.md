@@ -68,7 +68,6 @@ Activity messages can be customized using `/simkl-style`.
 **Style**
 - **Rich** — large landscape artwork
 - **Minimal** — compact thumbnail
-- **Poster** — large portrait artwork
 
 **Artwork**
 - **Automatic** — chooses the most appropriate available artwork
@@ -442,7 +441,6 @@ DISCORD_BOT_TOKEN=your_discord_bot_token_here
 SIMKL_CLIENT_ID=your_simkl_client_id_here
 TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
-GUILD_ID=
 POLL_INTERVAL_MINUTES=60
 POLL_CONCURRENCY=5
 ```
