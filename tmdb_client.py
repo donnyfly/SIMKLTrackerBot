@@ -1168,6 +1168,40 @@ class TmdbClient:
         )
 
     # ------------------------------------------------------------------
+    # Recommendations
+    # ------------------------------------------------------------------
+
+    async def get_tv_recommendations(self, series_id, page=1) -> list[dict]:
+        """Return TMDB recommendations for a TV series."""
+        try:
+            series_id=int(series_id)
+            page=int(page)
+        except (TypeError,ValueError):
+            return []
+
+        data=await self._get_json(
+            f"{API_BASE}/tv/{series_id}/recommendations",
+            {"language":"en-US","page":page},
+        )
+        results=(data or {}).get("results") if isinstance(data,dict) else None
+        return results if isinstance(results,list) else []
+
+    async def get_movie_recommendations(self, movie_id, page=1) -> list[dict]:
+        """Return TMDB recommendations for a movie."""
+        try:
+            movie_id=int(movie_id)
+            page=int(page)
+        except (TypeError,ValueError):
+            return []
+
+        data=await self._get_json(
+            f"{API_BASE}/movie/{movie_id}/recommendations",
+            {"language":"en-US","page":page},
+        )
+        results=(data or {}).get("results") if isinstance(data,dict) else None
+        return results if isinstance(results,list) else []
+
+    # ------------------------------------------------------------------
     # Movies
     # ------------------------------------------------------------------
 
