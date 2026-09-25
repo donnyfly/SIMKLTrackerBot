@@ -507,11 +507,11 @@ class TmdbClient:
 
         Strategy:
 
-        1. Try the TMDB series ID directly.
-        2. Try the TVDB -> TMDB series mapping.
-        3. Try the supplied season candidates.
-        4. If those fail, inspect TMDB seasons and match by episode
-           number/title.
+        1. Resolve the TVDB ID to the canonical TMDB series when available.
+        2. Try the supplied season candidates using TVMaze.
+        3. Try the same season candidates directly on TMDB.
+        4. For high absolute episode numbers, inspect TMDB seasons for an
+           exact episode-number match.
 
         This avoids assuming that SIMKL/TVDB/TMDB all use identical
         season numbering.
