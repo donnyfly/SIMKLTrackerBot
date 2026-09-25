@@ -1726,6 +1726,7 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
                 if float(result.get("vote_average") or 0) > float(entry.get("vote_average") or 0):
                     entry["vote_average"]=result.get("vote_average")
                     entry["vote_count"]=result.get("vote_count")
+            candidates[key]=entry
 
     log.info(
         "Recommendation filtering: %d unique raw, %d excluded by history, %d filtered by media type, %d invalid, %d fresh candidates.",
