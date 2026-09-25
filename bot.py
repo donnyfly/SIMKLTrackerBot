@@ -175,8 +175,32 @@ async def is_anime_movie_item(item):
                 exc_info=True,
             )
 
-    # No reliable SIMKL/TVDB evidence says this is a movie. Keep it as an
-    # anime series rather than guessing from a potentially colliding TMDB ID.
+    # With no explicit series evidence, verify the TMDB record itself. Anime
+    # movies commonly arrive from SIMKL's anime endpoint as a show object
+    # without seasons, so the TMDB movie record is the useful fallback here.
+    tmdb_id=(show.get("ids") or {}).get("tmdb")
+    if tmdb_id is None:
+        return False
+
+    try:
+        movie_title=await tmdb.get_movie_title(tmdb_id)
+    except Exception:
+        log.warning(
+            "TMDB anime media classification failed for %s (TMDB=%s).",
+            show.get("title") or "Untitled",
+            tmdb_id,
+            exc_info=True,
+        )
+        return False
+
+    if movie_title:
+        log.info(
+            "Classified anime item as movie: %s (TMDB=%s).",
+            show.get("title") or "Untitled",
+            tmdb_id,
+        )
+        return True
+
     return False
 
 
