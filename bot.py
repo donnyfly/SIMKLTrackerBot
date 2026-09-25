@@ -132,8 +132,9 @@ async def is_anime_movie_item(item):
         return True
 
     # Anime movies can arrive from /sync/all-items/anime as a show object
-    # with a TMDB movie ID and no season data. Confirm the TMDB media type
-    # instead of treating the item as a TV series.
+    # with a TMDB ID and no season data. The same numeric TMDB ID can have
+    # separate TV/movie records, so checking only /movie/{id} can falsely
+    # classify a TV series as a movie. Check the TV record first.
     if item.get("seasons"):
         return False
 
@@ -142,10 +143,14 @@ async def is_anime_movie_item(item):
         return False
 
     try:
+        tv_title=await tmdb.get_tv_title(tmdb_id)
+        if tv_title:
+            return False
+
         movie_title=await tmdb.get_movie_title(tmdb_id)
     except Exception:
         log.warning(
-            "TMDB anime movie classification failed for %s (TMDB=%s).",
+            "TMDB anime media classification failed for %s (TMDB=%s).",
             show.get("title") or "Untitled",
             tmdb_id,
         )
