@@ -1103,6 +1103,7 @@ EPISODE_FORMAT_CHOICES=[
     app_commands.Choice(name="Bold Text Format",value="false"),
     app_commands.Choice(name="Code Block Format",value="true"),
 ]
+RATING_CHOICES=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")]
 
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
 
@@ -2154,9 +2155,9 @@ async def simkl_unlink(i):
     ok=await storage.unlink_user(g,str(i.user.id)); await i.response.send_message("Your SIMKL account has been unlinked from this server." if ok else "You don't have a linked SIMKL account in this server.",ephemeral=True)
 
 @bot.tree.command(name="simkl-style",description="Choose your personal style for episode and movie watch activities.")
-@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES,show_imdb=RATING_CHOICES,show_mal=RATING_CHOICES)
 @app_commands.describe(reset="Reset your personal choices and follow the server default")
-async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,reset: bool | None = None):
+async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None,reset: bool | None = None):
     g=guild_id(i)
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     uid=str(i.user.id)
@@ -2180,7 +2181,7 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
         await i.response.send_message(settings_text(p,"Your personal settings have been reset. You now follow the server default for watch activities:"),ephemeral=True)
         return
 
-    if style is None and artwork is None and activity_text is None and episode_format is None:
+    if style is None and artwork is None and activity_text is None and episode_format is None and show_imdb is None and show_mal is None:
         p=await prefs(g,uid)
         await i.response.send_message(settings_text(p,"Your effective watch activity settings:"),ephemeral=True)
         return
@@ -2191,6 +2192,8 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
         artwork=artwork.value if artwork else None,
         activity_text=activity_text.value if activity_text else None,
         episode_code=(episode_format.value == "true") if episode_format else None,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
     )
     p=await prefs(g,uid)
     await i.response.send_message(
@@ -2200,9 +2203,9 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
     )
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set the default style for episode and movie watch activities.")
-@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
+@app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES,show_imdb=RATING_CHOICES,show_mal=RATING_CHOICES)
 @app_commands.describe(reset="Reset all server style options to the default settings",force_override="Force everyone to use the server settings, ignoring personal choices")
-async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,force_override: bool | None = None,reset: bool | None = None):
+async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None,force_override: bool | None = None,reset: bool | None = None):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
 
@@ -2229,7 +2232,7 @@ async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,art
         await i.response.send_message(settings_text(p,"Server style settings have been reset to the defaults:",forced),ephemeral=True)
         return
 
-    if style is None and artwork is None and activity_text is None and episode_format is None and force_override is None:
+    if style is None and artwork is None and activity_text is None and episode_format is None and show_imdb is None and show_mal is None and force_override is None:
         p=await storage.get_server_embed_preferences(g)
         forced=await storage.get_server_embed_force_override(g)
         await i.response.send_message(settings_text(p,"Server default:",forced),ephemeral=True)
@@ -2241,66 +2244,13 @@ async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,art
         artwork=artwork.value if artwork else None,
         activity_text=activity_text.value if activity_text else None,
         episode_code=(episode_format.value == "true") if episode_format else None,
+        show_imdb=(show_imdb.value == "true") if show_imdb else None,
+        show_mal=(show_mal.value == "true") if show_mal else None,
         force_override=force_override,
     )
     p=await storage.get_server_embed_preferences(g)
     forced=await storage.get_server_embed_force_override(g)
     await i.response.send_message(settings_text(p,"Server default updated:",forced),ephemeral=True)
-
-@bot.tree.command(name="simkl-ratings",description="Configure which ratings are shown in activity embeds.")
-@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
-async def simkl_ratings(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
-    g=guild_id(i)
-    if not g:
-        await i.response.send_message("This command must be used in a server.",ephemeral=True)
-        return
-    uid=str(i.user.id)
-    if show_imdb is None and show_mal is None:
-        p=await prefs(g,uid)
-        await i.response.send_message(
-            f"IMDb ratings: **{'shown' if p.get('show_imdb', True) else 'hidden'}**\n"
-            f"MAL ratings: **{'shown' if p.get('show_mal', True) else 'hidden'}**",
-            ephemeral=True,
-        )
-        return
-    await storage.set_embed_preferences(
-        uid,
-        show_imdb=(show_imdb.value == "true") if show_imdb else None,
-        show_mal=(show_mal.value == "true") if show_mal else None,
-    )
-    p=await prefs(g,uid)
-    await i.response.send_message(
-        f"Ratings are now configured as IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
-        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
-        ephemeral=True,
-    )
-
-@bot.tree.command(name="simkl-ratings-server",description="(Admin) Configure this server's default rating visibility.")
-@app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
-async def simkl_ratings_server(i,show_imdb: app_commands.Choice[str] | None = None,show_mal: app_commands.Choice[str] | None = None):
-    g=guild_id(i)
-    if not g or not is_admin(i):
-        await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
-        return
-    if show_imdb is None and show_mal is None:
-        p=await storage.get_server_embed_preferences(g)
-        await i.response.send_message(
-            f"Server ratings: IMDb **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
-            f"MAL **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
-            ephemeral=True,
-        )
-        return
-    await storage.set_server_embed_preferences(
-        g,
-        show_imdb=(show_imdb.value == "true") if show_imdb else None,
-        show_mal=(show_mal.value == "true") if show_mal else None,
-    )
-    p=await storage.get_server_embed_preferences(g)
-    await i.response.send_message(
-        f"Server ratings are now IMDb: **{'shown' if p.get('show_imdb', True) else 'hidden'}**, "
-        f"MAL: **{'shown' if p.get('show_mal', True) else 'hidden'}**.",
-        ephemeral=True,
-    )
 
 @bot.tree.command(name="simkl-setchannel",description="(Admin) Set the channel where this server's watch activity is posted.")
 async def simkl_setchannel(i,channel:discord.TextChannel=None):
