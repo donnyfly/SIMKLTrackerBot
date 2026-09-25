@@ -658,9 +658,79 @@ class TmdbClient:
                 self._anime_episode_cache[cache_key] = result
                 return result
 
-        # Do not search arbitrary TMDB seasons here. If the exact season/episode
-        # was not found, returning None is safer than reusing S01 (or another
-        # season) and producing a plausible-looking but incorrect notification.
+        # --------------------------------------------------------------
+        # TMDB absolute-episode fallback.
+        #
+        # Some long-running anime (for example One Piece) are represented by
+        # TMDB as one canonical series with year/arc-based seasons, while
+        # SIMKL/TVDB can expose the same show as a single season with the
+        # absolute episode number. In that case an exact S01E891 lookup will
+        # fail even though TMDB contains the correct episode as S20E891.
+        #
+        # Only use this fallback for high absolute episode numbers, where the
+        # episode number itself is a strong identifier. We deliberately do not
+        # do this for E01/E02/etc., because matching those across arbitrary
+        # seasons could reintroduce the old "wrong S01" problem.
+        # --------------------------------------------------------------
+
+        if episode_number >= 100:
+            for current_series_id in candidate_series_ids:
+                series = await self._get_series_details(current_series_id)
+                seasons = (series or {}).get("seasons") or []
+
+                for season in seasons:
+                    season_number = season.get("season_number")
+                    try:
+                        season_number = int(season_number)
+                    except (TypeError, ValueError):
+                        continue
+
+                    season_data = await self._get_season_details(
+                        current_series_id,
+                        season_number,
+                    )
+                    if not season_data:
+                        continue
+
+                    matching_episode = next(
+                        (
+                            item
+                            for item in (season_data.get("episodes") or [])
+                            if item.get("episode_number") == episode_number
+                        ),
+                        None,
+                    )
+                    if matching_episode is None:
+                        continue
+
+                    episode = await self.get_episode_details(
+                        current_series_id,
+                        season_number,
+                        episode_number,
+                    )
+                    if not episode:
+                        continue
+
+                    result = {
+                        "series_id": current_series_id,
+                        "season_number": season_number,
+                        "episode_number": episode_number,
+                        "episode": episode,
+                        "source": "tmdb_absolute_episode",
+                    }
+                    self._anime_episode_cache[cache_key] = result
+                    log.info(
+                        "Resolved anime episode via TMDB absolute episode: "
+                        "series=%s S%02dE%02d.",
+                        current_series_id,
+                        season_number,
+                        episode_number,
+                    )
+                    return result
+
+        # No safe match was found. Returning None is preferable to reusing
+        # S01 (or another season) and producing a plausible-looking but
+        # incorrect notification.
 
         self._anime_episode_cache[cache_key] = None
         return None
