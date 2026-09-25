@@ -320,11 +320,15 @@ async def get_show_ratings(tmdb_id):
         log.warning("MDBList show rating lookup failed for %s.", tmdb_id, exc_info=True)
         return None
 
-def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,logo=None,preferences=None):
+def build_embed(t,desc,ts,name,member,image,profile,title=None,title_url=None,poster=None,logo=None,preferences=None,status_activity=False):
     color,label=MEDIA_STYLES[t]; p={"style":"rich","artwork":"auto","activity_text":"short","show_imdb":True,"show_mal":True}; p.update(preferences or {})
     e=discord.Embed(title=title,url=title_url,description=desc,color=color,timestamp=ts)
     e.set_author(name=f"{name}'s Activity",url=profile,icon_url=member.display_avatar.url if member else None)
-    if p["artwork"]=="poster":
+    # Status activities always use the title poster. /simkl-style and
+    # /simkl-style-server only control watch activities.
+    if status_activity:
+        selected=poster
+    elif p["artwork"]=="poster":
         selected=poster
     elif p["artwork"]=="backdrop":
         selected=image
@@ -692,7 +696,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
                 logo=await (tmdb.get_movie_logo(artwork_tmdb_id) if t=="movies" else tmdb.get_tv_logo(artwork_tmdb_id))
             except Exception:
                 log.warning("TMDB title logo lookup failed for %s.", title)
-        e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p)
+        e=build_embed(t,desc,datetime.now(timezone.utc),name,member,image,profile,title,simkl_title_url(t,sid,ids.get("slug")),poster,logo,p,status_activity=True)
         if not await send_embed(ch,e,status):
             ok=False
             continue
@@ -2129,7 +2133,7 @@ async def simkl_unlink(i):
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     ok=await storage.unlink_user(g,str(i.user.id)); await i.response.send_message("Your SIMKL account has been unlinked from this server." if ok else "You don't have a linked SIMKL account in this server.",ephemeral=True)
 
-@bot.tree.command(name="simkl-style",description="Choose your personal SIMKL activity embed preferences.")
+@bot.tree.command(name="simkl-style",description="Choose your personal SIMKL watch activity embed preferences.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
 @app_commands.describe(reset="Reset your personal choices and follow the server default")
 async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,reset: bool | None = None):
@@ -2139,14 +2143,14 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
     if reset is True:
         await storage.reset_embed_preferences(uid)
         p=await prefs(g,uid)
-        await i.response.send_message(f"Your personal settings have been reset. You now follow the server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True)
+        await i.response.send_message(f"Your personal settings have been reset. You now follow the server default for watch activities:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n\nStatus activities always use posters.",ephemeral=True)
         return
     if style is None and artwork is None and activity_text is None:
-        p=await prefs(g,uid); await i.response.send_message(f"Your effective settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**",ephemeral=True); return
+        p=await prefs(g,uid); await i.response.send_message(f"Your effective watch activity settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n\nStatus activities always use posters.",ephemeral=True); return
     await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None)
-    p=await prefs(g,uid); await i.response.send_message(f"Your personal settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.",ephemeral=True)
+    p=await prefs(g,uid); await i.response.send_message(f"Your personal watch activity settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nThese settings override the server default.\nStatus activities always use posters.",ephemeral=True)
 
-@bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL activity embed style.")
+@bot.tree.command(name="simkl-style-server",description="(Admin) Set this server's default SIMKL watch activity embed style.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES)
 @app_commands.describe(force_override="Force everyone to use the server settings, ignoring personal choices")
 async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,force_override: bool | None = None):
