@@ -1595,7 +1595,7 @@ async def _recommendation_sources(uid,user,token,media_filter):
                 status=item.get("status")
                 if status in {"watching","completed","dropped","plantowatch"}:
                     excluded.add(("movie",int(tmdb_id)))
-                if status=="completed" or item.get("last_watched_at"):
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or item.get("last_watched_at")):
                     sources.append({
                         "kind":"movie",
                         "tmdb_id":int(tmdb_id),
@@ -1614,7 +1614,7 @@ async def _recommendation_sources(uid,user,token,media_filter):
                 status=movie_item.get("status")
                 if status in {"watching","completed","dropped","plantowatch"}:
                     excluded.add(("movie",int(tmdb_id)))
-                if status=="completed" or movie_item.get("last_watched_at"):
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or movie_item.get("last_watched_at")):
                     sources.append({
                         "kind":"movie",
                         "tmdb_id":int(tmdb_id),
@@ -1632,8 +1632,8 @@ async def _recommendation_sources(uid,user,token,media_filter):
                 status=show_item.get("status")
                 if status in {"watching","completed","dropped","plantowatch"}:
                     excluded.add(("tv",int(tmdb_id)))
-                if status=="completed" or show_item.get("last_watched_at"):
-                    latest=_latest_watched_episode(show_item)
+                latest=_latest_watched_episode(show_item)
+                if status not in {"plantowatch","dropped"} and (status in {"watching","completed"} or show_item.get("last_watched_at") or latest):
                     watched_at=show_item.get("last_watched_at") or (latest[0].isoformat() if latest else "")
                     sources.append({
                         "kind":"tv",
@@ -1643,6 +1643,10 @@ async def _recommendation_sources(uid,user,token,media_filter):
                     })
 
     sources.sort(key=lambda item:item.get("watched_at") or "",reverse=True)
+    log.info(
+        "Recommendation sources for user %s: %d sources, %d exclusions, filter=%s",
+        uid,len(sources),len(excluded),media_filter,
+    )
     return sources[:8],excluded,token
 
 
@@ -1732,6 +1736,10 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
             return
 
         recommendations=await _get_recommendation_candidates(sources,excluded,media_filter)
+        log.info(
+            "Recommendation candidates for user %s: %d from %d sources",
+            uid,len(recommendations),len(sources),
+        )
         if not recommendations:
             await i.followup.send(
                 "I couldn't find a fresh recommendation from your current SIMKL history. Try adding more watched titles.",
