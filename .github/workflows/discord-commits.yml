@@ -4,9 +4,10 @@ on:
   push:
     branches:
       - main
+      - test
 
 concurrency:
-  group: discord-commit-notifications-main
+  group: discord-commit-notifications-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -47,7 +48,7 @@ jobs:
 
           api_url = (
               f"https://api.github.com/repos/{repo_full_name}"
-              f"/commits?sha=main&per_page=50"
+              f"/commits?sha=${{ github.ref_name }}&per_page=50"
           )
           request = urllib.request.Request(
               api_url,
@@ -67,7 +68,7 @@ jobs:
           )
 
           if newest is None:
-              raise RuntimeError("Could not find the pushed commit on main.")
+              raise RuntimeError("Could not find the pushed commit on the triggering branch.")
 
           newest_time = parse_time(newest["commit"]["committer"]["date"])
           cutoff = newest_time - timedelta(seconds=60)
@@ -89,7 +90,8 @@ jobs:
               commit_lines.append(f"[`{sha}`]({url}) — {message}")
 
           count = len(commits)
-          title = f"[{repo_name}:main] {count} new commit{'s' if count != 1 else ''}"
+          branch = event["ref"].removeprefix("refs/heads/")
+          title = f"[{repo_name}:{branch}] {count} new commit{'s' if count != 1 else ''}"
 
           compare_url = (
               f"{repo_url}/compare/{commits[0]['sha']}...{commits[-1]['sha']}"
