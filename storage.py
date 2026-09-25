@@ -120,6 +120,11 @@ def _normalise_user(user: dict) -> None:
     if not isinstance(prefs, dict):
         prefs = copy.deepcopy(DEFAULT_EMBED_PREFERENCES)
         user["embed_preferences"] = prefs
+    # Migrate the removed legacy "Poster" style to its equivalent
+    # Rich layout + Poster artwork combination.
+    if prefs.get("style") == "poster":
+        prefs["style"] = "rich"
+        prefs["artwork"] = "poster"
     prefs.setdefault("style", "rich")
     prefs.setdefault("artwork", "auto")
     prefs.setdefault("activity_text", "short")
@@ -173,6 +178,11 @@ def _normalise_guild(guild: dict) -> None:
     guild.setdefault("force_embed_preferences", False)
     if not isinstance(guild["embed_preferences"], dict):
         guild["embed_preferences"] = copy.deepcopy(DEFAULT_EMBED_PREFERENCES)
+    # Migrate the removed legacy "Poster" style to its equivalent
+    # Rich layout + Poster artwork combination.
+    if guild["embed_preferences"].get("style") == "poster":
+        guild["embed_preferences"]["style"] = "rich"
+        guild["embed_preferences"]["artwork"] = "poster"
     guild["embed_preferences"].setdefault("style", "rich")
     guild["embed_preferences"].setdefault("artwork", "auto")
     guild["embed_preferences"].setdefault("activity_text", "short")
