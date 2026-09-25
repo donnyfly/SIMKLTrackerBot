@@ -199,15 +199,27 @@ def _normalise_guild(guild: dict) -> None:
 class Storage:
     def __init__(self):
         self._data = _load_from_disk()
-        self._dirty = False
+        migrated_legacy_preferences = False
 
         for user in self._data["users"].values():
             if isinstance(user, dict):
+                had_legacy_poster_style = (
+                    isinstance(user.get("embed_preferences"), dict)
+                    and user["embed_preferences"].get("style") == "poster"
+                )
                 _normalise_user(user)
+                migrated_legacy_preferences |= had_legacy_poster_style
 
         for guild in self._data["guilds"].values():
             if isinstance(guild, dict):
+                had_legacy_poster_style = (
+                    isinstance(guild.get("embed_preferences"), dict)
+                    and guild["embed_preferences"].get("style") == "poster"
+                )
                 _normalise_guild(guild)
+                migrated_legacy_preferences |= had_legacy_poster_style
+
+        self._dirty = migrated_legacy_preferences
 
     def _user(self, discord_user_id: str) -> dict | None:
         user = self._data["users"].get(discord_user_id)
