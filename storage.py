@@ -41,8 +41,8 @@ _write_lock = asyncio.Lock()
 
 DEFAULT_EMBED_PREFERENCES = {
     "style": "rich",
-    "artwork": "auto",
-    "activity_text": "short",
+    "artwork": "backdrop",
+    "activity_text": "detailed",
     "show_imdb": True,
     "show_mal": True,
     "episode_code": True,
@@ -163,8 +163,8 @@ def _normalise_user(user: dict) -> None:
         prefs["style"] = "rich"
         prefs["artwork"] = "poster"
     prefs.setdefault("style", "rich")
-    prefs.setdefault("artwork", "auto")
-    prefs.setdefault("activity_text", "short")
+    prefs.setdefault("artwork", "backdrop")
+    prefs.setdefault("activity_text", "detailed")
     prefs.setdefault("show_imdb", True)
     prefs.setdefault("show_mal", True)
     prefs.setdefault("episode_code", True)
@@ -240,8 +240,8 @@ def _normalise_guild(guild: dict) -> None:
         guild["embed_preferences"]["style"] = "rich"
         guild["embed_preferences"]["artwork"] = "poster"
     guild["embed_preferences"].setdefault("style", "rich")
-    guild["embed_preferences"].setdefault("artwork", "auto")
-    guild["embed_preferences"].setdefault("activity_text", "short")
+    guild["embed_preferences"].setdefault("artwork", "backdrop")
+    guild["embed_preferences"].setdefault("activity_text", "detailed")
     guild["embed_preferences"].setdefault("show_imdb", True)
     guild["embed_preferences"].setdefault("show_mal", True)
     guild["embed_preferences"].setdefault("episode_code", True)
