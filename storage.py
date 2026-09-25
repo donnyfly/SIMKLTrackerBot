@@ -10,13 +10,31 @@ import copy
 import json
 import os
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
 
 DEFAULT_POLL_INTERVAL_MINUTES = 60
 EPOCH_ISO = "1970-01-01T00:00:00Z"
-STATISTICS_TIMEZONE = ZoneInfo("Asia/Singapore")
+DEFAULT_TIMEZONE = "Asia/Singapore"
+
+
+def _default_timezone_name() -> str:
+    value = os.getenv("SIMKL_DEFAULT_TIMEZONE", DEFAULT_TIMEZONE).strip()
+    return value or DEFAULT_TIMEZONE
+
+
+def _resolve_timezone(name: str | None):
+    value = (name or "").strip()
+    if not value:
+        value = _default_timezone_name()
+    try:
+        return ZoneInfo(value)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        try:
+            return ZoneInfo(_default_timezone_name())
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            return timezone.utc
 
 _lock = asyncio.Lock()
 _write_lock = asyncio.Lock()
@@ -35,6 +53,7 @@ def _default_guild() -> dict:
         "channel_id": None,
         "embed_preferences": copy.deepcopy(DEFAULT_EMBED_PREFERENCES),
         "force_embed_preferences": False,
+        "timezone": None,
         "users": {},
     }
 
@@ -202,6 +221,9 @@ def _normalise_guild(guild: dict) -> None:
     guild.setdefault("channel_id", defaults["channel_id"])
     guild.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
     guild.setdefault("force_embed_preferences", False)
+    guild.setdefault("timezone", None)
+    if guild.get("timezone") is not None and not isinstance(guild.get("timezone"), str):
+        guild["timezone"] = None
     if not isinstance(guild["embed_preferences"], dict):
         guild["embed_preferences"] = copy.deepcopy(DEFAULT_EMBED_PREFERENCES)
     # Migrate the removed legacy "Poster" style to its equivalent
@@ -396,6 +418,32 @@ class Storage:
             self._dirty = True
         await self.flush()
 
+    async def get_timezone(self, guild_id: int | str) -> dict:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            configured = guild.get("timezone")
+            if configured:
+                try:
+                    ZoneInfo(configured)
+                    return {"name": configured, "source": "server"}
+                except (TypeError, ValueError, ZoneInfoNotFoundError):
+                    pass
+            default_name = _default_timezone_name()
+            try:
+                ZoneInfo(default_name)
+            except (TypeError, ValueError, ZoneInfoNotFoundError):
+                default_name = "UTC"
+            return {"name": default_name, "source": "environment" if os.getenv("SIMKL_DEFAULT_TIMEZONE") else "built-in"}
+
+    async def set_timezone(self, guild_id: int | str, timezone_name: str | None) -> None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id, create=True)
+            guild["timezone"] = timezone_name.strip() if timezone_name else None
+            self._dirty = True
+        await self.flush()
+
     async def get_server_embed_preferences(self, guild_id: int | str) -> dict:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
@@ -533,7 +581,9 @@ class Storage:
                     watched_dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
                     if watched_dt.tzinfo is None:
                         watched_dt = watched_dt.replace(tzinfo=timezone.utc)
-                    day = watched_dt.astimezone(STATISTICS_TIMEZONE).date().isoformat()
+                    guild = self._guild(guild_id, create=True)
+                     timezone_name = guild.get("timezone")
+                     day = watched_dt.astimezone(_resolve_timezone(timezone_name)).date().isoformat()
                 except (TypeError, ValueError):
                     day = watched_at[:10]
             if day:
