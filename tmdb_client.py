@@ -605,9 +605,10 @@ class TmdbClient:
                 imdb_id = (episode.get("externals") or {}).get("imdb")
 
                 # TVMaze can resolve the episode correctly but may not expose
-                # an IMDb ID. Enrich the result from TMDB when possible so
-                # anime episodes keep their IMDb ratings without replacing
-                # TVMaze's more reliable title/artwork data.
+                # an IMDb ID. First try the same season/episode on TMDB, then
+                # search the candidate TMDB series' seasons by the TVMaze
+                # episode title. Anime season numbering can differ between
+                # TVDB/TVMaze and TMDB, so title matching is needed here.
                 if not imdb_id:
                     for current_series_id in candidate_series_ids:
                         tmdb_episode = await self.get_episode_details(
@@ -622,6 +623,49 @@ class TmdbClient:
                                 "imdb_id"
                             )
                         )
+                        if imdb_id:
+                            break
+
+                if not imdb_id and episode.get("name"):
+                    target_title = str(episode["name"]).strip().casefold()
+                    for current_series_id in candidate_series_ids:
+                        series = await self._get_series_details(current_series_id)
+                        seasons = (series or {}).get("seasons") or []
+
+                        found = None
+                        for season in seasons:
+                            try:
+                                tmdb_season_number = int(season.get("season_number"))
+                            except (TypeError, ValueError):
+                                continue
+
+                            season_data = await self._get_season_details(
+                                current_series_id,
+                                tmdb_season_number,
+                            )
+                            if not season_data:
+                                continue
+
+                            for item in season_data.get("episodes") or []:
+                                item_title = str(item.get("name") or "").strip().casefold()
+                                if item_title != target_title:
+                                    continue
+
+                                found = await self.get_episode_details(
+                                    current_series_id,
+                                    tmdb_season_number,
+                                    item.get("episode_number"),
+                                )
+                                break
+
+                            if found:
+                                break
+
+                        if found:
+                            imdb_id = (
+                                (found.get("external_ids") or {}).get("imdb_id")
+                            )
+
                         if imdb_id:
                             break
 
