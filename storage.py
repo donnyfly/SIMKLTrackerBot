@@ -45,7 +45,7 @@ DEFAULT_EMBED_PREFERENCES = {
     "activity_text": "detailed",
     "show_imdb": True,
     "show_mal": True,
-    "episode_code": True,
+    "episode_code": False,
 }
 
 
