@@ -385,11 +385,16 @@ class TmdbClient:
             if value not in candidate_series_ids:
                 candidate_series_ids.append(value)
 
-        add_series_id(series_id)
-
+        # Anime seasons on SIMKL are separate entries, while TMDB often
+        # keeps them under one canonical TV series. Prefer the TVDB mapping
+        # first because the SIMKL season entry's TMDB ID can resolve to a
+        # season-specific/alternate record whose season 1 would otherwise
+        # incorrectly win the lookup.
         if tvdb_id:
             resolved = await self.find_series_by_tvdb(tvdb_id)
             add_series_id(resolved)
+
+        add_series_id(series_id)
 
         # --------------------------------------------------------------
         # Direct season candidates
