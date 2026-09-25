@@ -239,14 +239,9 @@ def format_episode_range(s,a,b):
     if s is None: return f"E{a:02d}" if a==b else f"E{a:02d}-E{b:02d}"
     return f"S{s}E{a:02d}" if a==b else f"S{s}E{a:02d}-E{b:02d}"
 
-def format_episode_display(s,a,b,use_code=True):
-    if use_code:
-        return f"`{format_episode_range(s,a,b)}`"
-    if s is None:
-        return f"Episode {a}" if a==b else f"Episodes {a}-{b}"
-    if a==b:
-        return f"Episode {a} of Season {s}"
-    return f"Episodes {a}-{b} of Season {s}"
+def format_episode_display(s,a,b,use_code=False):
+    formatted=format_episode_range(s,a,b)
+    return f"`{formatted}`" if use_code else formatted
 def group_consecutive(es):
     es=sorted(es,key=lambda x:x["episode_number"]); groups=[]
     for e in es:
@@ -1095,7 +1090,7 @@ ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 EPISODE_FORMAT_CHOICES=[
     app_commands.Choice(name="Code (S3E05)",value="true"),
-    app_commands.Choice(name="Text (Episode 5 of Season 3)",value="false"),
+    app_commands.Choice(name="Text (S3E05)",value="false"),
 ]
 
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
