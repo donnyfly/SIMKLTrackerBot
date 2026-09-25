@@ -1616,6 +1616,7 @@ async def _recommendation_sources(uid,user,token,media_filter):
                         "kind":"movie",
                         "tmdb_id":int(tmdb_id),
                         "watched_at":item.get("last_watched_at") or "",
+                        "anime":media_filter=="anime",
                     })
                 continue
 
@@ -1635,6 +1636,7 @@ async def _recommendation_sources(uid,user,token,media_filter):
                         "kind":"movie",
                         "tmdb_id":int(tmdb_id),
                         "watched_at":movie_item.get("last_watched_at") or "",
+                        "anime":media_filter=="anime" or media_type=="anime",
                     })
 
             for show_item in episode_items:
