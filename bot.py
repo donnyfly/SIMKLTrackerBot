@@ -100,6 +100,16 @@ def simkl_title_url(t,i,slug=None):
 def episode_key(t,i,s,e): return f"{t}:{i}:{s}:{e}"
 def movie_key(t,i): return f"{t}:{i}"
 
+async def resolve_anime_tmdb_id(ids):
+    """Resolve an anime season entry to the canonical TMDB TV series."""
+    ids = ids or {}
+    tvdb_id = ids.get("tvdb")
+    if tvdb_id is not None:
+        resolved = await tmdb.find_series_by_tvdb(tvdb_id)
+        if resolved is not None:
+            return resolved
+    return ids.get("tmdb")
+
 def iter_show_episodes(t,items):
     for item in items or []:
         show=item.get("show") or {}; ids=show.get("ids") or {}; sid=ids.get("simkl")
@@ -283,9 +293,17 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
     count=0; ok=True; pending={}
     for (sid,sn,kind),es in groups.items():
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
-        if t=="anime" and es[0].get("tmdb_id") is not None:
+        if t=="anime":
             try:
-                english_title=await tmdb.get_tv_title(es[0]["tmdb_id"], prefer_english=True)
+                anime_tmdb_id=await resolve_anime_tmdb_id({
+                    "tmdb": es[0].get("tmdb_id"),
+                    "tvdb": es[0].get("tvdb_id"),
+                })
+                if anime_tmdb_id is not None:
+                    english_title=await tmdb.get_tv_title(
+                        anime_tmdb_id,
+                        prefer_english=True,
+                    )
                 if english_title:
                     title=english_title
             except Exception:
@@ -304,9 +322,13 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 if ep_title: desc+=f"\n*{ep_title}*"
                 if rating is not None: desc+=f"\n⭐ IMDb {rating:.1f}/10"
             logo=None
-            if grp[0].get("tmdb_id") is not None and p["artwork"] in ("auto", "backdrop"):
+            if t=="anime" and p["artwork"] in ("auto", "backdrop"):
                 try:
-                    logo=await tmdb.get_tv_logo(grp[0]["tmdb_id"])
+                    anime_tmdb_id=await resolve_anime_tmdb_id({
+                        "tmdb": grp[0].get("tmdb_id"),
+                        "tvdb": grp[0].get("tvdb_id"),
+                    })
+                    logo=await tmdb.get_tv_logo(anime_tmdb_id) if anime_tmdb_id is not None else None
                 except Exception:
                     log.warning("TMDB TV logo lookup failed for %s.", title, exc_info=True)
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image or fallback,profile,title,url,fallback,logo,p)
@@ -390,9 +412,7 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
         title=m.get("title") or "Untitled"
         if t=="anime":
             try:
-                anime_tmdb_id=ids.get("tmdb")
-                if anime_tmdb_id is None and ids.get("tvdb") is not None:
-                    anime_tmdb_id=await tmdb.find_series_by_tvdb(ids["tvdb"])
+                anime_tmdb_id=await resolve_anime_tmdb_id(ids)
                 if anime_tmdb_id is not None:
                     english_title=await tmdb.get_tv_title(
                         anime_tmdb_id,
