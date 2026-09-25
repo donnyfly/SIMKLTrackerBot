@@ -167,7 +167,7 @@ def _normalise_user(user: dict) -> None:
     prefs.setdefault("activity_text", "detailed")
     prefs.setdefault("show_imdb", True)
     prefs.setdefault("show_mal", True)
-    prefs.setdefault("episode_code", True)
+    prefs.setdefault("episode_code", False)
     user.setdefault(
         "embed_preferences_custom",
         prefs != DEFAULT_EMBED_PREFERENCES,
@@ -244,7 +244,7 @@ def _normalise_guild(guild: dict) -> None:
     guild["embed_preferences"].setdefault("activity_text", "detailed")
     guild["embed_preferences"].setdefault("show_imdb", True)
     guild["embed_preferences"].setdefault("show_mal", True)
-    guild["embed_preferences"].setdefault("episode_code", True)
+    guild["embed_preferences"].setdefault("episode_code", False)
     guild.setdefault("users", {})
     if not isinstance(guild["users"], dict):
         guild["users"] = {}
