@@ -536,7 +536,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                 # Anime movie records are especially prone to carrying a
                 # stale/season-specific TMDB ID. Resolve by title first so a
                 # valid-but-wrong TMDB movie ID cannot silently win.
-                match=await tmdb.find_movie_by_title(m.get("title"))
+                match=None if tmdb_movie_id is not None else await tmdb.find_movie_by_title(m.get("title"))
                 if match:
                     tmdb_movie_id=match["id"]
                     english_title=match.get("title")
