@@ -6,11 +6,13 @@ SIMKLTrackerBot supports **TV shows, anime, and movies**, with automatic account
 
 Everything is self-hosted, and linked SIMKL account data is stored locally on your own server.
 
-<img width="400" alt="SIMKLTrackerBot activity example" src="https://github.com/user-attachments/assets/7bb75ae5-200e-47e6-822a-f5110152cba2" />
+<img width="400" height="" alt="simkldiscordbotsample7" src="https://github.com/user-attachments/assets/62b58b48-a792-4b67-99df-6741f9d742b4" />
 
-<img width="212" alt="SIMKLTrackerBot activity example" src="https://github.com/user-attachments/assets/1189412b-92f7-4c01-9cac-0a428a27a808" />
+<img width="400" height="" alt="simkldiscordbotsample8" src="https://github.com/user-attachments/assets/82ffdb47-6a17-4cfb-96bc-a6ae2fa1c929" />
 
-<img width="600" alt="SIMKLTrackerBot activity example" src="https://github.com/user-attachments/assets/fd39a2af-26b9-420d-89e5-dea00a04ac0f" />
+<img width="400" height="" alt="simkldiscordbotsample12" src="https://github.com/user-attachments/assets/c51ab135-a55f-4b6f-b711-01d4b9171095" />
+
+<img width="400" height="" alt="simkldiscordbotsample9" src="https://github.com/user-attachments/assets/e3c04ba3-47b1-4026-987b-87161fc6ac7b" />
 
 ---
 
