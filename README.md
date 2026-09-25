@@ -52,11 +52,9 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-community` | Everyone | View combined server watch statistics |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
-| `/simkl-style` | Everyone | Set your personal embed, artwork, and text preferences |
+| `/simkl-style` | Everyone | Set your personal embed, artwork, text, and rating preferences |
 | `/simkl-setchannel` | Manage Server | Choose where watch activity is posted |
-| `/simkl-style-server` | Manage Server | Set the server-wide default embed preferences |
-| `/simkl-ratings` | Everyone | Set your personal IMDb/MyAnimeList rating visibility |
-| `/simkl-ratings-server` | Manage Server | Set the server-wide rating visibility defaults |
+| `/simkl-style-server` | Manage Server | Set the server-wide default embed, text, and rating preferences |
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-timezone` | Manage Server | View or set the server timezone used for dates, statistics, and streaks |
 | `/simkl-weekly-recap` | Manage Server | Post a weekly watch recap; use the period option to test it immediately |
