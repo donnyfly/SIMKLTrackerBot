@@ -58,6 +58,7 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-ratings` | Everyone | Set your personal IMDb/MyAnimeList rating visibility |
 | `/simkl-ratings-server` | Manage Server | Set the server-wide rating visibility defaults |
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
+| `/simkl-timezone` | Manage Server | View or set the server timezone used for dates, statistics, and streaks |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
 ### Watch statistics
@@ -506,6 +507,26 @@ POLL_INTERVAL_MINUTES=15
 Shorter intervals result in more frequent API requests.
 
 Restart the bot after changing the setting.
+
+### `SIMKL_DEFAULT_TIMEZONE`
+
+Sets the default IANA timezone used for watch statistics and streaks.
+
+The default is:
+
+```env
+SIMKL_DEFAULT_TIMEZONE=Asia/Singapore
+```
+
+Server administrators can override this per Discord server with:
+
+```text
+/simkl-timezone timezone: Asia/Singapore
+```
+
+Use `/simkl-timezone` without a value to view the current setting. Use `/simkl-timezone timezone: reset` to return to the environment/default timezone.
+
+Timezone changes affect how **new watch activity** is assigned to calendar dates. Existing date-only statistics cannot be perfectly converted after the fact because the original timestamp for every historical event is not retained.
 
 ### `POLL_CONCURRENCY`
 
