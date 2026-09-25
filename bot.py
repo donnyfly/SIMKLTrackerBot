@@ -344,15 +344,27 @@ async def seed_history(g,uid,u,token,request_cache=None):
                     watches[k]=wr
                     seeded_stats.append(("anime_movie" if (m.get("anime_type") == "movie" or m.get("type") == "movie" or (m.get("ids") or {}).get("mal")) else "movie", m.get("title") or "Untitled", k, wr))
         else:
-            for x in items or []:
+            episode_items=items
+            movie_items=[]
+            if t=="anime":
+                episode_items,movie_items=await split_anime_items(items)
+            for x in episode_items or []:
                 m=x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl")
                 if sid is not None and x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
-            for e in iter_show_episodes(t,items):
+            for x in movie_items or []:
+                m=x.get("movie") or x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl"); wr=x.get("last_watched_at")
+                if sid is None or (wr and parse_iso(wr)>since): continue
+                k=movie_key("movies",sid); keys.append(k)
+                if x.get("status"): statuses[f"movies:{sid}"]=x["status"]
+                if wr:
+                    watches[k]=wr
+                    seeded_stats.append(("anime_movie",m.get("title") or "Untitled",k,wr))
+            for e in iter_show_episodes(t,episode_items):
                 if e["watched_dt"] is None or e["watched_dt"]<=since:
                     keys.append(e["key"])
                     if e.get("watched_raw"):
                         watches[e["key"]]=e["watched_raw"]
-                        seeded_stats.append(("anime_episode" if t == "anime" else "episode", e.get("show_title") or "Untitled", f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}", e["watched_raw"]))
+                        seeded_stats.append(("anime_episode" if t == "anime" else "episode",e.get("show_title") or "Untitled",f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}",e["watched_raw"]))
     await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches,flush=False)
     for media_type,title,key,watched_at in seeded_stats:
         await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False)
