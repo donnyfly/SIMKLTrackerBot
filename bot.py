@@ -487,14 +487,14 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
     if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
-async def process_movies(ch,g,uid,name,member,items,since,profile):
+async def process_movies(ch,g,uid,name,member,items,since,profile,force_scan=False):
     announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True; pending={}
     for x in items or []:
         m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
         if sid is None or not wr: continue
         dt=parse_iso(wr); k=movie_key("movies",sid); prev=watches.get(k); prevdt=parse_iso(prev) if prev else None; rw=k in announced and prevdt and dt>prevdt
         if k in announced and not rw: continue
-        if k not in announced and dt<=since: continue
+        if k not in announced and dt<=since and not force_scan: continue
         title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
         anime_movie = bool(
             ids.get("mal")
@@ -739,7 +739,10 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
         if not force_scan and (not stamp or parse_iso(stamp)<=sdt):
             continue
         try:
-            items,token=await cached_simkl_items(uid,u,token,t,date_from=since,request_cache=request_cache)
+            fetch_since=None if force_scan else since
+            items,token=await cached_simkl_items(
+                uid,u,token,t,date_from=fetch_since,request_cache=request_cache
+            )
 
             if t=="anime":
                 anime_shows,anime_movies=await split_anime_items(items)
