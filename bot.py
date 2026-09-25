@@ -1532,7 +1532,8 @@ async def simkl_watching(i,type: app_commands.Choice[str] | None = None):
         items.sort(key=lambda item: item["title"].casefold())
         lines=[]
         for item in items[:15]:
-            emoji,label=MEDIA_STYLES[item["media_type"]]
+            label=MEDIA_STYLES[item["media_type"]][1]
+            emoji={"shows":"📺","anime":"🌸","movies":"🎬"}.get(item["media_type"],"🎬")
             line=f"{emoji} **{item['title']}**"
             latest=item.get("latest")
             if latest:
@@ -1568,6 +1569,206 @@ async def simkl_watching(i,type: app_commands.Choice[str] | None = None):
         )
         await i.followup.send(
             "I couldn't load your currently watching list right now. Please try again in a moment.",
+            ephemeral=True,
+        )
+
+
+async def _recommendation_sources(uid,user,token,media_filter):
+    request_cache={}
+    media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+    sources=[]
+    excluded=set()
+
+    for media_type in media_types:
+        items,token=await cached_simkl_items(
+            uid,user,token,media_type,
+            request_cache=request_cache,
+            timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+        )
+        for item in items or []:
+            if media_type=="movies":
+                media=item.get("movie") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None:
+                    continue
+                status=item.get("status")
+                if status in {"watching","completed","dropped"}:
+                    excluded.add(("movie",int(tmdb_id)))
+                if status=="completed" or item.get("last_watched_at"):
+                    sources.append({
+                        "kind":"movie",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":item.get("last_watched_at") or "",
+                    })
+                continue
+
+            episode_items,movie_items=([item],[]) if media_type!="anime" else await split_anime_items([item])
+
+            for movie_item in movie_items:
+                media=movie_item.get("movie") or movie_item.get("show") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None:
+                    continue
+                status=movie_item.get("status")
+                if status in {"watching","completed","dropped","plantowatch"}:
+                    excluded.add(("movie",int(tmdb_id)))
+                if status=="completed" or movie_item.get("last_watched_at"):
+                    sources.append({
+                        "kind":"movie",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":movie_item.get("last_watched_at") or "",
+                    })
+
+            for show_item in episode_items:
+                media=show_item.get("show") or {}
+                ids=media.get("ids") or {}
+                tmdb_id=ids.get("tmdb")
+                if tmdb_id is None and ids.get("tvdb") is not None:
+                    tmdb_id=await tmdb.find_series_by_tvdb(ids.get("tvdb"))
+                if tmdb_id is None:
+                    continue
+                status=show_item.get("status")
+                if status in {"watching","completed","dropped","plantowatch"}:
+                    excluded.add(("tv",int(tmdb_id)))
+                if status=="completed" or show_item.get("last_watched_at"):
+                    latest=_latest_watched_episode(show_item)
+                    watched_at=show_item.get("last_watched_at") or (latest[0].isoformat() if latest else "")
+                    sources.append({
+                        "kind":"tv",
+                        "tmdb_id":int(tmdb_id),
+                        "watched_at":watched_at,
+                        "anime":media_filter=="anime",
+                    })
+
+    sources.sort(key=lambda item:item.get("watched_at") or "",reverse=True)
+    return sources[:8],excluded,token
+
+
+async def _get_recommendation_candidates(sources,excluded,media_filter):
+    candidates={}
+    for source in sources:
+        if source["kind"]=="movie":
+            results=await tmdb.get_movie_recommendations(source["tmdb_id"])
+            kind="movie"
+        else:
+            results=await tmdb.get_tv_recommendations(source["tmdb_id"])
+            kind="tv"
+
+        for result in results:
+            try:
+                result_id=int(result.get("id"))
+            except (TypeError,ValueError):
+                continue
+            if (kind,result_id) in excluded:
+                continue
+            if media_filter=="anime" and kind=="tv":
+                origin=result.get("origin_country") or []
+                if "JP" not in origin and result.get("original_language")!="ja":
+                    continue
+            if not result.get("name") and not result.get("title"):
+                continue
+
+            key=(kind,result_id)
+            entry=candidates.get(key)
+            if entry is None:
+                entry=dict(result)
+                entry["_sources"]=1
+            else:
+                entry["_sources"]+=1
+                if float(result.get("vote_average") or 0) > float(entry.get("vote_average") or 0):
+                    entry["vote_average"]=result.get("vote_average")
+                    entry["vote_count"]=result.get("vote_count")
+    ranked=sorted(
+        candidates.values(),
+        key=lambda item:(
+            -int(item.get("_sources",1)),
+            -float(item.get("vote_average") or 0),
+            -float(item.get("popularity") or 0),
+            str(item.get("name") or item.get("title") or "").casefold(),
+        ),
+    )
+    return ranked
+
+
+@bot.tree.command(
+    name="simkl-recommend",
+    description="Get personalized recommendations based on your SIMKL history.",
+)
+@app_commands.choices(type=[
+    app_commands.Choice(name="Everything",value="all"),
+    app_commands.Choice(name="TV",value="shows"),
+    app_commands.Choice(name="Anime",value="anime"),
+    app_commands.Choice(name="Movies",value="movies"),
+])
+async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    await i.response.defer(ephemeral=True)
+    media_filter=type.value if type else "all"
+
+    try:
+        token=await valid_token(uid,user)
+        sources,excluded,token=await _recommendation_sources(uid,user,token,media_filter)
+
+        if not sources:
+            await i.followup.send(
+                "I need some watched history before I can make recommendations. Watch a few titles on SIMKL and try again.",
+                ephemeral=True,
+            )
+            return
+
+        recommendations=await _get_recommendation_candidates(sources,excluded,media_filter)
+        if not recommendations:
+            await i.followup.send(
+                "I couldn't find a fresh recommendation from your current SIMKL history. Try adding more watched titles.",
+                ephemeral=True,
+            )
+            return
+
+        selected=recommendations[:5]
+        lines=[]
+        for index,result in enumerate(selected,1):
+            title=result.get("name") or result.get("title") or "Untitled"
+            rating=result.get("vote_average")
+            rating_text=f" · ⭐ **{float(rating):.1f}**" if rating else ""
+            source_count=int(result.get("_sources",1))
+            reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
+            lines.append(f"**{index}.** {title}{rating_text} — {reason}")
+
+        embed=discord.Embed(
+            title=f"🧠 {i.user.display_name} · Recommendations",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Personalized from your SIMKL watch history · TMDB")
+        await i.followup.send(embed=embed,ephemeral=True)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Recommendation engine failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't generate recommendations right now. Please try again in a moment.",
             ephemeral=True,
         )
 
