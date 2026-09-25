@@ -422,12 +422,22 @@ async def resolve_member(g,uid):
         except Exception: return None,"Someone"
     return m,m.display_name
 
-async def process_shows(ch,g,uid,name,member,t,items,profile):
+async def process_shows(ch,g,uid,name,member,t,items,profile,force_scan=False):
     announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); groups=defaultdict(list)
     for e in iter_show_episodes(t,items):
         if e["watched_dt"] is None: continue
         prev=watches.get(e["key"]); prevdt=parse_iso(prev) if prev else None
         rw=e["key"] in announced and prevdt and e["watched_dt"]>prevdt
+        if force_scan and e["key"] in announced:
+            log.info(
+                "Checknow episode candidate: %s S%02dE%02d watched_at=%s previous=%s rewatch=%s",
+                e["show_title"] or "Untitled",
+                int(e["season_num"] or 0),
+                int(e["episode_number"] or 0),
+                e["watched_raw"],
+                prev,
+                bool(rw),
+            )
         if e["key"] not in announced or rw: groups[(e["simkl_id"],e["season_num"],"rewatched" if rw else "watched")].append(e)
     count=0; ok=True; pending={}
     for (sid,sn,kind),es in groups.items():
@@ -493,6 +503,15 @@ async def process_movies(ch,g,uid,name,member,items,since,profile,force_scan=Fal
         m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
         if sid is None or not wr: continue
         dt=parse_iso(wr); k=movie_key("movies",sid); prev=watches.get(k); prevdt=parse_iso(prev) if prev else None; rw=k in announced and prevdt and dt>prevdt
+        if force_scan and k in announced:
+            log.info(
+                "Checknow movie candidate: %s SIMKL=%s watched_at=%s previous=%s rewatch=%s",
+                m.get("title") or "Untitled",
+                sid,
+                wr,
+                prev,
+                bool(rw),
+            )
         if k in announced and not rw: continue
         if k not in announced and dt<=since and not force_scan: continue
         title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
@@ -743,6 +762,14 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
             items,token=await cached_simkl_items(
                 uid,u,token,t,date_from=fetch_since,request_cache=request_cache
             )
+            if force_scan:
+                log.info(
+                    "Checknow fetched %d %s item(s) for user %s (date_from=%s).",
+                    len(items or []),
+                    t,
+                    uid,
+                    fetch_since,
+                )
 
             if t=="anime":
                 anime_shows,anime_movies=await split_anime_items(items)
@@ -750,7 +777,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
                     ch,g,uid,name,member,t,anime_shows,profile
                 )
                 show_count,show_ok=await process_shows(
-                    ch,g,uid,name,member,t,anime_shows,profile
+                    ch,g,uid,name,member,t,anime_shows,profile,force_scan=force_scan
                 )
                 movie_count,movie_ok=await process_movies(
                     ch,g,uid,name,member,anime_movies,sdt,profile,force_scan=force_scan
