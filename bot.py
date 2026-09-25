@@ -285,7 +285,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
         if t=="anime" and es[0].get("tmdb_id") is not None:
             try:
-                english_title=await tmdb.get_tv_title(es[0]["tmdb_id"])
+                english_title=await tmdb.get_tv_title(es[0]["tmdb_id"], prefer_english=True)
                 if english_title:
                     title=english_title
             except Exception:
@@ -388,6 +388,13 @@ async def process_status(ch,g,uid,name,member,t,items,profile):
             successful[key]=status
             continue
         title=m.get("title") or "Untitled"
+        if t=="anime" and ids.get("tmdb") is not None:
+            try:
+                english_title=await tmdb.get_tv_title(ids["tmdb"], prefer_english=True)
+                if english_title:
+                    title=english_title
+            except Exception:
+                log.warning("TMDB anime status title lookup failed for %s.", title, exc_info=True)
         poster=simkl_poster_url(m.get("poster"))
         image=None
         if ids.get("tmdb") is not None:
