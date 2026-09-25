@@ -648,23 +648,73 @@ class TmdbClient:
             return None
 
         title = data.get("name")
+        original_title = data.get("original_name")
 
         if prefer_english:
+            # Prefer an English translation that is actually different from
+            # the original/Romaji title.
             translations = await self._get_json(
                 f"{API_BASE}/tv/{series_id}/translations",
             )
+            english_titles = []
             if translations:
                 for translation in translations.get("translations") or []:
-                    if (
-                        translation.get("iso_639_1") == "en"
-                        and translation.get("iso_3166_1") == "US"
-                    ):
-                        translated_title = (
-                            (translation.get("data") or {}).get("name")
+                    if translation.get("iso_639_1") != "en":
+                        continue
+                    translated_title = (
+                        (translation.get("data") or {}).get("name")
+                    )
+                    if translated_title:
+                        english_titles.append(
+                            (
+                                translation.get("iso_3166_1") == "US",
+                                str(translated_title).strip(),
+                            )
                         )
+
+            for is_us, translated_title in sorted(
+                english_titles,
+                key=lambda item: not item[0],
+            ):
+                if (
+                    translated_title
+                    and translated_title.casefold()
+                    != str(original_title or "").strip().casefold()
+                ):
+                    title = translated_title
+                    break
+
+            # Some anime have no useful English translation entry, but TMDB's
+            # search index can still know the English title as an alias.
+            if (
+                not title
+                or str(title).strip().casefold()
+                == str(original_title or "").strip().casefold()
+            ):
+                query = original_title or title
+                if query:
+                    search = await self._get_json(
+                        f"{API_BASE}/search/tv",
+                        {
+                            "query": query,
+                            "language": "en-US",
+                            "include_adult": False,
+                        },
+                    )
+                    results = search.get("results") if search else None
+                    if results:
+                        matching = next(
+                            (
+                                result
+                                for result in results
+                                if result.get("id") == series_id
+                            ),
+                            None,
+                        )
+                        candidate = matching or results[0]
+                        translated_title = candidate.get("name")
                         if translated_title:
                             title = translated_title
-                        break
 
         result = str(title) if title else None
         self._tv_title_cache[cache_key] = result
