@@ -136,6 +136,7 @@ def _default_guild_user(start_time_iso: str | None = None) -> dict:
         "announced": set(),
         "activity_state": _default_activity_state(),
         "statistics": _default_statistics(),
+        "achievements": {},
         "last_poll_at": None,
         "last_success_at": None,
         "last_error": None,
@@ -192,6 +193,9 @@ def _normalise_guild_user(user: dict) -> None:
         stats["watch_dates"] = {}
     if not isinstance(stats.get("titles"), dict):
         stats["titles"] = {}
+    achievements = user.get("achievements")
+    if not isinstance(achievements, dict):
+        user["achievements"] = {}
     state = user["activity_state"]
     if not isinstance(state, dict):
         state = _default_activity_state()
@@ -565,6 +569,36 @@ class Storage:
             self._migrate_legacy_guild_locked(str(guild_id))
             user = self._guild_user(guild_id, discord_user_id)
             return copy.deepcopy(user["statistics"]) if user else _default_statistics()
+
+    async def get_achievements(self, guild_id: str | int, discord_user_id: str) -> dict:
+        """Return unlocked achievements keyed by achievement ID."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user = self._guild_user(guild_id, discord_user_id)
+            return copy.deepcopy(user.get("achievements", {})) if user else {}
+
+    async def unlock_achievement(
+        self,
+        guild_id: str | int,
+        discord_user_id: str,
+        achievement_id: str,
+        unlocked_at: str,
+        flush: bool = True,
+    ) -> bool:
+        """Unlock an achievement once; return True only for a new unlock."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user = self._guild_user(guild_id, discord_user_id)
+            if not user:
+                return False
+            achievements = user.setdefault("achievements", {})
+            if achievement_id in achievements:
+                return False
+            achievements[achievement_id] = {"unlocked_at": unlocked_at}
+            self._dirty = True
+        if flush:
+            await self.flush()
+        return True
 
     async def record_watch(
         self,
