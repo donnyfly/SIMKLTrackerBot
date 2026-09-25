@@ -331,7 +331,7 @@ async def cached_simkl_activities(uid,u,token,request_cache):
     return result
 
 async def seed_history(g,uid,u,token,request_cache=None):
-    last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}
+    last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}; seeded_stats=[]
     for t in MEDIA_TYPES:
         since=parse_iso(last.get(t,EPOCH_ISO)); items,token=await cached_simkl_items(uid,u,token,t,request_cache=request_cache,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
         if t=="movies":
@@ -340,7 +340,9 @@ async def seed_history(g,uid,u,token,request_cache=None):
                 if sid is None or (wr and parse_iso(wr)>since): continue
                 k=movie_key(t,sid); keys.append(k)
                 if x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
-                if wr: watches[k]=wr
+                if wr:
+                    watches[k]=wr
+                    seeded_stats.append(("anime_movie" if (m.get("anime_type") == "movie" or m.get("type") == "movie" or (m.get("ids") or {}).get("mal")) else "movie", m.get("title") or "Untitled", k, wr))
         else:
             for x in items or []:
                 m=x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl")
@@ -348,8 +350,14 @@ async def seed_history(g,uid,u,token,request_cache=None):
             for e in iter_show_episodes(t,items):
                 if e["watched_dt"] is None or e["watched_dt"]<=since:
                     keys.append(e["key"])
-                    if e.get("watched_raw"): watches[e["key"]]=e["watched_raw"]
-    await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches); return token
+                    if e.get("watched_raw"):
+                        watches[e["key"]]=e["watched_raw"]
+                        seeded_stats.append(("anime_episode" if t == "anime" else "episode", e.get("show_title") or "Untitled", f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}", e["watched_raw"]))
+    await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches,flush=False)
+    for media_type,title,key,watched_at in seeded_stats:
+        await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False)
+    await storage.flush()
+    return token
 
 async def resolve_member(g,uid):
     guild=bot.get_guild(int(g))
@@ -416,7 +424,9 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             keys=[x["key"] for x in grp]
             watch_times={x["key"]:x["watched_raw"] for x in grp}
             await storage.add_announced(g,uid,keys)
-            await storage.update_activity_state(g,uid,watch_times=watch_times,flush=True)
+            await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
+            for watched in grp:
+                await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False)
             pending.update(watch_times)
             count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -482,7 +492,8 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
             ok=False
             continue
         await storage.add_announced(g,uid,[k])
-        await storage.update_activity_state(g,uid,watch_times={k:wr},flush=True)
+        await storage.update_activity_state(g,uid,watch_times={k:wr},flush=False)
+        await storage.record_watch(g,uid,"anime_movie" if anime_movie else "movie",title,k,wr,flush=False)
         pending[k]=wr
         count+=1
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -739,10 +750,142 @@ async def poll_all(g=None):
             len(users),len(targets),posted,duration,POLL_CONCURRENCY
         )
         return posted
+def calculate_streaks(watch_dates):
+    dates=set()
+    for value in (watch_dates or {}).keys():
+        try:
+            dates.add(datetime.strptime(value,"%Y-%m-%d").date())
+        except (TypeError,ValueError):
+            continue
+    if not dates:
+        return 0,0
+    today=datetime.now(timezone.utc).date()
+    current=0
+    cursor=today
+    while cursor in dates:
+        current+=1
+        cursor-=timedelta(days=1)
+    longest=0
+    for date in sorted(dates):
+        length=1
+        cursor=date-timedelta(days=1)
+        while cursor in dates:
+            length+=1
+            cursor-=timedelta(days=1)
+        longest=max(longest,length)
+    return current,longest
+
+def stats_total(statistics):
+    return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
+
+def format_watch_stats(statistics):
+    current,longest=calculate_streaks(statistics.get("watch_dates"))
+    episodes=int(statistics.get("episodes_watched",0))
+    movies=int(statistics.get("movies_watched",0))
+    anime_episodes=int(statistics.get("anime_episodes_watched",0))
+    anime_movies=int(statistics.get("anime_movies_watched",0))
+    return (f"📺 Episodes watched: **{episodes:,}**\n"
+            f"🎬 Movies watched: **{movies:,}**\n"
+            f"🌸 Anime episodes: **{anime_episodes:,}**\n"
+            f"🎞️ Anime movies: **{anime_movies:,}**\n"
+            f"🔥 Current streak: **{current} day{'s' if current != 1 else ''}**\n"
+            f"🏆 Longest streak: **{longest} day{'s' if longest != 1 else ''}**")
+
 STYLE_CHOICES=[app_commands.Choice(name="Rich (large artwork)",value="rich"),app_commands.Choice(name="Minimal (small artwork)",value="minimal")]
 ARTWORK_CHOICES=[app_commands.Choice(name="Automatic",value="auto"),app_commands.Choice(name="Poster only",value="poster"),app_commands.Choice(name="Backdrop",value="backdrop")]
 TEXT_CHOICES=[app_commands.Choice(name="Short",value="short"),app_commands.Choice(name="Detailed",value="detailed")]
 NOT_ADMIN_MESSAGE="You need the Manage Server permission to do that."
+
+@bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
+@app_commands.describe(user="Optional server member to view")
+async def simkl_stats(i,user: discord.Member | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    target=user or i.user
+    stats=await storage.get_statistics(g,str(target.id))
+    if not stats.get("watch_dates") and not stats.get("titles"):
+        await i.response.send_message(f"No watch statistics have been recorded for {target.mention} in this server yet.",ephemeral=True); return
+    embed=discord.Embed(title=f"{target.display_name}'s Watch Stats",description=format_watch_stats(stats),color=0x5865F2)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text="SIMKLTrackerBot · All-time statistics")
+    await i.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="simkl-streak",description="Show your SIMKL watch streak.")
+@app_commands.describe(user="Optional server member to view")
+async def simkl_streak(i,user: discord.Member | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    target=user or i.user
+    stats=await storage.get_statistics(g,str(target.id))
+    current,longest=calculate_streaks(stats.get("watch_dates"))
+    embed=discord.Embed(title=f"🔥 {target.display_name}'s Watch Streak",description=f"Current streak: **{current} day{'s' if current != 1 else ''}**\nLongest streak: **{longest} day{'s' if longest != 1 else ''}**",color=0xF1C40F)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    await i.response.send_message(embed=embed)
+
+
+LEADERBOARD_CHOICES=[
+    app_commands.Choice(name="Total watches",value="total"),
+    app_commands.Choice(name="Episodes",value="episodes"),
+    app_commands.Choice(name="Movies",value="movies"),
+    app_commands.Choice(name="Anime",value="anime"),
+]
+
+@bot.tree.command(name="simkl-leaderboard",description="Show the server's SIMKL watch leaderboard.")
+@app_commands.choices(category=LEADERBOARD_CHOICES)
+async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    category=category.value if category else "total"
+    rows=await storage.get_guild_statistics(g)
+    values=[]
+    for row in rows:
+        stats=row["statistics"]
+        if category=="episodes":
+            value=int(stats.get("episodes_watched",0))
+        elif category=="movies":
+            value=int(stats.get("movies_watched",0))
+        elif category=="anime":
+            value=int(stats.get("anime_episodes_watched",0))+int(stats.get("anime_movies_watched",0))
+        else:
+            value=stats_total(stats)
+        if value>0:
+            values.append((value,row["discord_user_id"],row["simkl_username"]))
+    values.sort(key=lambda x:(-x[0],x[2].lower()))
+    if not values:
+        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True); return
+    lines=[]
+    medals=["🥇","🥈","🥉"]
+    for index,(value,uid,username) in enumerate(values[:10]):
+        prefix=medals[index] if index<3 else f"**{index+1}.**"
+        lines.append(f"{prefix} <@{uid}> — **{value:,}**")
+    labels={"total":"Total watches","episodes":"Episodes","movies":"Movies","anime":"Anime"}
+    embed=discord.Embed(title=f"🏆 {i.guild.name} · {labels[category]}",description="\n".join(lines),color=0xF1C40F)
+    embed.set_footer(text="All-time statistics · Top 10")
+    await i.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="simkl-community",description="Show this server's combined SIMKL watch statistics.")
+async def simkl_community(i):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
+    rows=await storage.get_guild_statistics(g)
+    linked=len(rows)
+    episodes=sum(int(r["statistics"].get("episodes_watched",0)) for r in rows)
+    movies=sum(int(r["statistics"].get("movies_watched",0)) for r in rows)
+    anime_episodes=sum(int(r["statistics"].get("anime_episodes_watched",0)) for r in rows)
+    anime_movies=sum(int(r["statistics"].get("anime_movies_watched",0)) for r in rows)
+    active_days=set()
+    for row in rows:
+        active_days.update((row["statistics"].get("watch_dates") or {}).keys())
+    embed=discord.Embed(title=f"📊 {i.guild.name} · Community Stats",description=f"👥 Tracked users: **{linked}**\n📺 Episodes watched: **{episodes:,}**\n🎬 Movies watched: **{movies:,}**\n🌸 Anime episodes: **{anime_episodes:,}**\n🎞️ Anime movies: **{anime_movies:,}**\n📅 Active watch days: **{len(active_days):,}**",color=0x5865F2)
+    embed.set_footer(text="All-time statistics · Server-wide")
+    await i.response.send_message(embed=embed)
+
 
 @bot.tree.command(name="simkl-link",description="Link your SIMKL account in this server.")
 async def simkl_link(i):
