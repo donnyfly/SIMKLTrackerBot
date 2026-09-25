@@ -1313,20 +1313,6 @@ async def simkl_server_stats(i):
     await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
 
 
-@bot.tree.command(name="simkl-community",description="Show this server's combined SIMKL watch statistics.")
-async def simkl_community(i):
-    # Keep the original command as a backwards-compatible alias.
-    g=guild_id(i)
-    if not g:
-        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
-    rows=await storage.get_guild_statistics(g)
-    if not any(
-        int(row["statistics"].get("episodes_watched",0)) + int(row["statistics"].get("movies_watched",0))
-        for row in rows
-    ):
-        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True); return
-    await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
-
 
 
 RANDOM_TYPE_CHOICES=[
@@ -1434,6 +1420,157 @@ async def random_picker_matches_genre(item, media_type, genre):
         for g in (genres or [])
         if isinstance(g,dict)
     )
+
+
+WATCHING_TYPE_CHOICES=[
+    app_commands.Choice(name="Everything",value="all"),
+    app_commands.Choice(name="TV",value="shows"),
+    app_commands.Choice(name="Anime",value="anime"),
+    app_commands.Choice(name="Movies",value="movies"),
+]
+
+
+def _latest_watched_episode(item):
+    latest=None
+    for season in item.get("seasons") or []:
+        season_number=season.get("number")
+        for episode in season.get("episodes") or []:
+            watched_at=episode.get("watched_at")
+            if not watched_at:
+                continue
+            parsed=parse_iso(watched_at)
+            if latest is None or parsed > latest[0]:
+                latest=(parsed,season_number,episode.get("number"),episode.get("title"))
+    return latest
+
+
+async def _currently_watching_items(uid,user,token,media_types):
+    results=[]
+    request_cache={}
+    for media_type in media_types:
+        items,token=await cached_simkl_items(
+            uid,user,token,media_type,
+            request_cache=request_cache,
+            timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+        )
+        for item in items or []:
+            if item.get("status") != "watching":
+                continue
+            if media_type == "movies":
+                media=item.get("movie") or {}
+                ids=media.get("ids") or {}
+                results.append({
+                    "media_type":media_type,
+                    "title":media.get("title") or "Untitled",
+                    "ids":ids,
+                    "poster":media.get("poster"),
+                    "latest":None,
+                })
+                continue
+
+            episode_items,movie_items=([item],[]) if media_type != "anime" else await split_anime_items([item])
+            for movie_item in movie_items:
+                media=movie_item.get("movie") or movie_item.get("show") or {}
+                ids=media.get("ids") or {}
+                results.append({
+                    "media_type":"movies",
+                    "title":media.get("title") or "Untitled",
+                    "ids":ids,
+                    "poster":media.get("poster"),
+                    "latest":None,
+                })
+            for show_item in episode_items:
+                media=show_item.get("show") or {}
+                ids=media.get("ids") or {}
+                latest=_latest_watched_episode(show_item)
+                results.append({
+                    "media_type":media_type,
+                    "title":media.get("title") or "Untitled",
+                    "ids":ids,
+                    "poster":media.get("poster"),
+                    "latest":latest,
+                })
+    return results,token
+
+
+@bot.tree.command(
+    name="simkl-watching",
+    description="Show what you're currently watching on SIMKL.",
+)
+@app_commands.choices(type=WATCHING_TYPE_CHOICES)
+@app_commands.describe(type="Optionally limit the list to TV, anime, or movies.")
+async def simkl_watching(i,type: app_commands.Choice[str] | None = None):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    await i.response.defer(ephemeral=True)
+
+    try:
+        token=await valid_token(uid,user)
+        media_filter=type.value if type else "all"
+        media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+        items,token=await _currently_watching_items(uid,user,token,media_types)
+
+        if not items:
+            await i.followup.send(
+                "You're not currently watching anything on SIMKL.",
+                ephemeral=True,
+            )
+            return
+
+        items.sort(key=lambda item: item["title"].casefold())
+        lines=[]
+        for item in items[:15]:
+            emoji,label=MEDIA_STYLES[item["media_type"]]
+            line=f"{emoji} **{item['title']}**"
+            latest=item.get("latest")
+            if latest:
+                _,season,episode,episode_title=latest
+                if season is not None and episode is not None:
+                    line+=f" — **S{int(season):02d}E{int(episode):02d}**"
+                elif episode is not None:
+                    line+=f" — **E{int(episode):02d}**"
+                if episode_title:
+                    line+=f" · {episode_title}"
+            lines.append(line)
+
+        if len(items)>15:
+            lines.append(f"\n…and **{len(items)-15}** more.")
+
+        embed=discord.Embed(
+            title=f"👀 {i.user.display_name} · Currently Watching",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Live from SIMKL · Currently watching")
+        await i.followup.send(embed=embed,ephemeral=True)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Currently watching failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't load your currently watching list right now. Please try again in a moment.",
+            ephemeral=True,
+        )
+
 
 @bot.tree.command(name="simkl-random",description="Pick something random from your SIMKL Plan To Watch list.")
 @app_commands.choices(type=RANDOM_TYPE_CHOICES,genre=RANDOM_GENRE_CHOICES)
