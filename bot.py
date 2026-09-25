@@ -1252,13 +1252,47 @@ def random_picker_added_at(item):
             return value
     return None
 
-def random_picker_episode_count(item):
+def random_picker_episode_count_from_item(item):
+    """Fallback count when TMDB has no series metadata."""
     total=0
     for season in item.get("seasons") or []:
         for episode in season.get("episodes") or []:
             if isinstance(episode,dict):
                 total+=1
     return total or None
+
+
+async def random_picker_media_details(item, media_type):
+    """Return the best display title and total episode count for a pick."""
+    ids=random_picker_ids(item,media_type)
+    title=random_picker_title(item,media_type)
+    episode_count=None
+
+    if media_type=="movies":
+        tmdb_id=ids.get("tmdb")
+        if tmdb_id is not None:
+            english_title=await tmdb.get_movie_title(tmdb_id,prefer_english=True)
+            if english_title:
+                title=english_title
+        return title,episode_count,ids
+
+    tmdb_id=ids.get("tmdb")
+    if media_type=="anime":
+        # SIMKL can store seasonal anime under separate entries. Prefer the
+        # TVDB -> canonical TMDB mapping so both the English title and total
+        # episode count come from the complete series rather than one season.
+        tmdb_id=await resolve_anime_tmdb_id(ids) or tmdb_id
+
+    if tmdb_id is not None:
+        english_title=await tmdb.get_tv_title(tmdb_id,prefer_english=(media_type=="anime"))
+        if english_title:
+            title=english_title
+        episode_count=await tmdb.get_tv_episode_count(tmdb_id)
+
+    if episode_count is None:
+        episode_count=random_picker_episode_count_from_item(item)
+
+    return title,episode_count,ids
 
 async def random_picker_matches_genre(item, media_type, genre):
     if not genre:
@@ -1339,8 +1373,7 @@ async def simkl_random(
             return
 
         media_type,item=random.choice(candidates)
-        title=random_picker_title(item,media_type)
-        ids=random_picker_ids(item,media_type)
+        title,episode_count,ids=await random_picker_media_details(item,media_type)
         simkl_id=ids.get("simkl")
         slug=ids.get("slug")
         title_url=simkl_title_url(media_type,simkl_id,slug) if simkl_id else None
@@ -1358,9 +1391,8 @@ async def simkl_random(
         label=MEDIA_STYLES[media_type][1]
         lines=[f"**{label}**"]
 
-        episode_count=random_picker_episode_count(item)
         if episode_count:
-            lines.append(f"📺 **{episode_count:,}** episode(s) in the available watchlist data.")
+            lines.append(f"📺 **{episode_count:,}** episode(s) total.")
 
         added_at=random_picker_added_at(item)
         if added_at:
