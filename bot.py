@@ -1,4 +1,4 @@
-import asyncio, logging, os, time
+import asyncio, logging, os, random, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1210,6 +1210,199 @@ async def simkl_community(i):
     embed.set_footer(text="All-time statistics · Server-wide")
     await i.response.send_message(embed=embed)
 
+
+
+RANDOM_TYPE_CHOICES=[
+    app_commands.Choice(name="Everything",value="all"),
+    app_commands.Choice(name="TV shows",value="shows"),
+    app_commands.Choice(name="Anime",value="anime"),
+    app_commands.Choice(name="Movies",value="movies"),
+]
+
+RANDOM_GENRE_CHOICES=[
+    app_commands.Choice(name="Any genre",value=""),
+    app_commands.Choice(name="Action",value="action"),
+    app_commands.Choice(name="Adventure",value="adventure"),
+    app_commands.Choice(name="Animation",value="animation"),
+    app_commands.Choice(name="Comedy",value="comedy"),
+    app_commands.Choice(name="Crime",value="crime"),
+    app_commands.Choice(name="Drama",value="drama"),
+    app_commands.Choice(name="Fantasy",value="fantasy"),
+    app_commands.Choice(name="Horror",value="horror"),
+    app_commands.Choice(name="Mystery",value="mystery"),
+    app_commands.Choice(name="Romance",value="romance"),
+    app_commands.Choice(name="Science Fiction",value="science fiction"),
+    app_commands.Choice(name="Thriller",value="thriller"),
+]
+
+def random_picker_title(item, media_type):
+    obj=item.get("movie") if media_type=="movies" else item.get("show")
+    obj=obj or {}
+    return obj.get("title") or "Untitled"
+
+def random_picker_ids(item, media_type):
+    obj=item.get("movie") if media_type=="movies" else item.get("show")
+    obj=obj or {}
+    return obj.get("ids") or {}
+
+def random_picker_added_at(item):
+    for key in ("added_to_list_at","date_added","added_at","created_at"):
+        value=item.get(key)
+        if value:
+            return value
+    return None
+
+def random_picker_episode_count(item):
+    total=0
+    for season in item.get("seasons") or []:
+        for episode in season.get("episodes") or []:
+            if isinstance(episode,dict):
+                total+=1
+    return total or None
+
+async def random_picker_matches_genre(item, media_type, genre):
+    if not genre:
+        return True
+    ids=random_picker_ids(item,media_type)
+    tmdb_id=ids.get("tmdb")
+    if tmdb_id is None:
+        return False
+    try:
+        if media_type=="movies":
+            data=await tmdb._get_json(
+                f"https://api.themoviedb.org/3/movie/{int(tmdb_id)}",
+                {"language":"en-US"},
+            )
+        else:
+            data=await tmdb._get_series_details(int(tmdb_id))
+    except Exception:
+        return False
+    genres=data.get("genres") if isinstance(data,dict) else None
+    return any(
+        str(g.get("name","")).strip().casefold()==genre.casefold()
+        for g in (genres or [])
+        if isinstance(g,dict)
+    )
+
+@bot.tree.command(name="simkl-random",description="Pick something random from your SIMKL Plan To Watch list.")
+@app_commands.choices(type=RANDOM_TYPE_CHOICES,genre=RANDOM_GENRE_CHOICES)
+@app_commands.describe(
+    type="Choose what kind of title to pick.",
+    genre="Optionally limit the pick to a genre.",
+)
+async def simkl_random(
+    i,
+    type: app_commands.Choice[str] | None = None,
+    genre: app_commands.Choice[str] | None = None,
+):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account in this server. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    media_filter=type.value if type else "all"
+    genre_filter=genre.value if genre else ""
+
+    await i.response.defer()
+
+    try:
+        token=await valid_token(uid,user)
+        media_types=MEDIA_TYPES if media_filter=="all" else (media_filter,)
+        candidates=[]
+
+        for media_type in media_types:
+            items,token=await cached_simkl_items(
+                uid,user,token,media_type,
+                timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+            )
+            for item in items or []:
+                if item.get("status")!="plantowatch":
+                    continue
+                if genre_filter and not await random_picker_matches_genre(item,media_type,genre_filter):
+                    continue
+                candidates.append((media_type,item))
+
+        if not candidates:
+            description="I couldn't find anything matching those filters in your **Plan To Watch** list."
+            if genre_filter:
+                description+=f"\n\nTry a different genre or remove the **{genre_filter.title()}** filter."
+            await i.followup.send(description,ephemeral=True)
+            return
+
+        media_type,item=random.choice(candidates)
+        title=random_picker_title(item,media_type)
+        ids=random_picker_ids(item,media_type)
+        simkl_id=ids.get("simkl")
+        slug=ids.get("slug")
+        title_url=simkl_title_url(media_type,simkl_id,slug) if simkl_id else None
+
+        poster_obj=item.get("movie") if media_type=="movies" else item.get("show")
+        poster=(poster_obj or {}).get("poster")
+        if media_type=="movies":
+            image=await tmdb.get_movie_backdrop(ids.get("tmdb"))
+            logo=await tmdb.get_movie_logo(ids.get("tmdb"))
+        else:
+            image=await tmdb.get_tv_backdrop(ids.get("tmdb"))
+            logo=await tmdb.get_tv_logo(ids.get("tmdb"))
+
+        prefs=await storage.get_embed_preferences(g,uid)
+        label=MEDIA_STYLES[media_type][1]
+        lines=[f"**{label}**"]
+
+        episode_count=random_picker_episode_count(item)
+        if episode_count:
+            lines.append(f"📺 **{episode_count:,}** episode(s) in the available watchlist data.")
+
+        added_at=random_picker_added_at(item)
+        if added_at:
+            added_dt=parse_iso(added_at)
+            if added_dt != datetime.min.replace(tzinfo=timezone.utc):
+                lines.append(f"📅 Added to Plan To Watch: **<t:{int(added_dt.timestamp())}:D>**")
+
+        if genre_filter:
+            lines.append(f"🏷️ Genre filter: **{genre_filter.title()}**")
+
+        embed=build_embed(
+            media_type,
+            "\n".join(lines),
+            datetime.now(timezone.utc),
+            i.user.display_name,
+            i.user,
+            image,
+            simkl_profile_url(user.get("simkl_account_id")),
+            title=title,
+            title_url=title_url,
+            poster=simkl_poster_url(poster) if poster else None,
+            logo=logo,
+            preferences=prefs,
+        )
+        embed.title=f"🎲 Random Pick · {title}"
+        embed.set_footer(text=f"{label} · SIMKL Plan To Watch")
+        await i.followup.send(embed=embed)
+
+    except SimklAuthError:
+        await i.followup.send(
+            "Your SIMKL authentication is no longer valid. Please use /simkl-link again.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        log.error(
+            "Random picker failed for user %s: %s: %s",
+            uid,type(exc).__name__,exc,
+        )
+        await i.followup.send(
+            "I couldn't pick a title right now. Please try again in a moment.",
+            ephemeral=True,
+        )
 
 @bot.tree.command(name="simkl-link",description="Link your SIMKL account in this server.")
 async def simkl_link(i):
