@@ -422,22 +422,12 @@ async def resolve_member(g,uid):
         except Exception: return None,"Someone"
     return m,m.display_name
 
-async def process_shows(ch,g,uid,name,member,t,items,profile,force_scan=False):
+async def process_shows(ch,g,uid,name,member,t,items,profile):
     announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); groups=defaultdict(list)
     for e in iter_show_episodes(t,items):
         if e["watched_dt"] is None: continue
         prev=watches.get(e["key"]); prevdt=parse_iso(prev) if prev else None
         rw=e["key"] in announced and prevdt and e["watched_dt"]>prevdt
-        if force_scan and e["key"] in announced:
-            log.info(
-                "Checknow episode candidate: %s S%02dE%02d watched_at=%s previous=%s rewatch=%s",
-                e["show_title"] or "Untitled",
-                int(e["season_num"] or 0),
-                int(e["episode_number"] or 0),
-                e["watched_raw"],
-                prev,
-                bool(rw),
-            )
         if e["key"] not in announced or rw: groups[(e["simkl_id"],e["season_num"],"rewatched" if rw else "watched")].append(e)
     count=0; ok=True; pending={}
     for (sid,sn,kind),es in groups.items():
@@ -497,23 +487,14 @@ async def process_shows(ch,g,uid,name,member,t,items,profile,force_scan=False):
     if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
-async def process_movies(ch,g,uid,name,member,items,since,profile,force_scan=False):
+async def process_movies(ch,g,uid,name,member,items,since,profile):
     announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True; pending={}
     for x in items or []:
         m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
         if sid is None or not wr: continue
         dt=parse_iso(wr); k=movie_key("movies",sid); prev=watches.get(k); prevdt=parse_iso(prev) if prev else None; rw=k in announced and prevdt and dt>prevdt
-        if force_scan and k in announced:
-            log.info(
-                "Checknow movie candidate: %s SIMKL=%s watched_at=%s previous=%s rewatch=%s",
-                m.get("title") or "Untitled",
-                sid,
-                wr,
-                prev,
-                bool(rw),
-            )
         if k in announced and not rw: continue
-        if k not in announced and dt<=since and not force_scan: continue
+        if k not in announced and dt<=since: continue
         title=m.get("title","a movie"); poster=simkl_poster_url(m.get("poster")); image=None
         anime_movie = bool(
             ids.get("mal")
@@ -695,7 +676,7 @@ async def mark_poll_failure(g,uid,error,previous_failures=0):
     failures=max(int(previous_failures or 0),0)+1
     await storage.update_poll_health(g,uid,last_error=error,consecutive_failures=failures,flush=True)
 
-async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
+async def poll_one(ch,g,uid,u,gu,request_cache=None):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
     try:
@@ -751,25 +732,13 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
         sdt=parse_iso(since)
         a=activities.get(ACTIVITY_KEYS[t]) or {}
         stamp=a.get("all")
-        log.debug("Check %s/%s: SIMKL %s activity=%r checkpoint=%s force_scan=%s",g,uid,t,stamp,since,force_scan)
-        # Normal polling uses the activity timestamp as a cheap change
-        # detector. /simkl-checknow can bypass it because SIMKL's activity
-        # feed can lag behind the watched-item data for a short time.
-        if not force_scan and (not stamp or parse_iso(stamp)<=sdt):
+        log.debug("Check %s/%s: SIMKL %s activity=%r checkpoint=%s",g,uid,t,stamp,since)
+        if not stamp or parse_iso(stamp)<=sdt:
             continue
         try:
-            fetch_since=None if force_scan else since
             items,token=await cached_simkl_items(
-                uid,u,token,t,date_from=fetch_since,request_cache=request_cache
+                uid,u,token,t,date_from=since,request_cache=request_cache
             )
-            if force_scan:
-                log.info(
-                    "Checknow fetched %d %s item(s) for user %s (date_from=%s).",
-                    len(items or []),
-                    t,
-                    uid,
-                    fetch_since,
-                )
 
             if t=="anime":
                 anime_shows,anime_movies=await split_anime_items(items)
@@ -777,10 +746,10 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
                     ch,g,uid,name,member,t,anime_shows,profile
                 )
                 show_count,show_ok=await process_shows(
-                    ch,g,uid,name,member,t,anime_shows,profile,force_scan=force_scan
+                    ch,g,uid,name,member,t,anime_shows,profile
                 )
                 movie_count,movie_ok=await process_movies(
-                    ch,g,uid,name,member,anime_movies,sdt,profile,force_scan=force_scan
+                    ch,g,uid,name,member,anime_movies,sdt,profile
                 )
                 wc=show_count+movie_count
                 wo=show_ok and movie_ok
@@ -789,7 +758,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
                     ch,g,uid,name,member,t,items,profile
                 )
                 wc,wo=await process_movies(
-                    ch,g,uid,name,member,items,sdt,profile,force_scan=force_scan
+                    ch,g,uid,name,member,items,sdt,profile
                 )
 
             if so and wo:
@@ -813,7 +782,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_scan=False):
         await storage.flush()
     return posted
 
-async def poll_all(g=None,force_scan=False):
+async def poll_all(g=None):
     started = time.monotonic()
 
     async with poll_lock:
@@ -852,7 +821,7 @@ async def poll_all(g=None,force_scan=False):
                             continue
 
                     try:
-                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache,force_scan=force_scan)
+                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache)
                     except SimklAuthError as exc:
                         error=f"SIMKL authentication failed: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
@@ -2295,7 +2264,7 @@ async def simkl_checknow(i):
     if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
     last_checknow_at=time.monotonic()
     await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
-    posted=await poll_all(g,force_scan=True)
+    posted=await poll_all(g)
     await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
 POLL_RETRY_DELAY_SECONDS=60
