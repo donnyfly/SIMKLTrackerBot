@@ -1735,6 +1735,11 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
         total_invalid,
         len(candidates),
     )
+    log.info(
+        "Recommendation candidate map: %d entries, keys=%s",
+        len(candidates),
+        list(candidates.keys())[:10],
+    )
 
     ranked=sorted(
         candidates.values(),
