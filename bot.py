@@ -837,7 +837,7 @@ async def simkl_timezone(i, timezone: str | None = None):
         now=datetime.now(ZoneInfo(info["name"]))
         source_label={"server":"Server setting","environment":"Environment default","built-in":"Built-in default"}.get(info["source"],"Default")
         await i.response.send_message(
-            f"🕐 **Timezone:** {info['name']}\\n**Source:** {source_label}\\n**Current local time:** {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"🕐 **Timezone:** {info['name']}\n**Source:** {source_label}\n**Current local time:** {now.strftime('%Y-%m-%d %H:%M:%S')}",
             ephemeral=True,
         )
         return
@@ -864,7 +864,7 @@ async def simkl_timezone(i, timezone: str | None = None):
     await storage.set_timezone(g, value)
     now=datetime.now(ZoneInfo(value))
     await i.response.send_message(
-        f"Set the server timezone to **{value}**.\\nCurrent local time: **{now.strftime('%Y-%m-%d %H:%M:%S')}**",
+        f"Set the server timezone to **{value}**.\nCurrent local time: **{now.strftime('%Y-%m-%d %H:%M:%S')}**",
         ephemeral=True,
     )
 
