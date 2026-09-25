@@ -1733,8 +1733,10 @@ async def _get_recommendation_candidates(sources,excluded,media_filter):
                 entry=dict(result)
                 entry["_recommendation_kind"]=kind
                 entry["_sources"]=1
+                entry["_anime"]=bool(source.get("anime"))
             else:
                 entry["_sources"]+=1
+                entry["_anime"]=entry.get("_anime",False) or bool(source.get("anime"))
                 if float(result.get("vote_average") or 0) > float(entry.get("vote_average") or 0):
                     entry["vote_average"]=result.get("vote_average")
                     entry["vote_count"]=result.get("vote_count")
@@ -1818,11 +1820,41 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
             return
 
         selected=recommendations[:5]
+
+        async def recommendation_ratings(result):
+            if mdblist is None or result.get("id") is None:
+                return {}
+
+            media_type="movie" if result.get("_recommendation_kind")=="movie" else "show"
+            try:
+                ratings=await mdblist.get_ratings(media_type,result.get("id"))
+                if not isinstance(ratings,dict):
+                    return {}
+                return ratings
+            except Exception:
+                log.warning(
+                    "Recommendation rating lookup failed for TMDB=%s.",
+                    result.get("id"),
+                    exc_info=True,
+                )
+                return {}
+
+        rating_results=await asyncio.gather(
+            *(recommendation_ratings(result) for result in selected)
+        )
+
         lines=[]
-        for index,result in enumerate(selected,1):
+        for index,(result,ratings) in enumerate(zip(selected,rating_results),1):
             title=result.get("name") or result.get("title") or "Untitled"
-            rating=result.get("vote_average")
-            rating_text=f" · ⭐ **{float(rating):.1f}**" if rating else ""
+            rating_parts=[]
+            imdb_rating=ratings.get("imdb")
+            if imdb_rating is not None:
+                rating_parts.append(f"⭐ IMDb **{imdb_rating:.1f}**")
+            if result.get("_anime"):
+                mal_rating=ratings.get("myanimelist")
+                if mal_rating is not None:
+                    rating_parts.append(f"🌸 MAL **{mal_rating:.1f}**")
+            rating_text=f" · {' · '.join(rating_parts)}" if rating_parts else ""
             source_count=int(result.get("_sources",1))
             reason=f"matches **{source_count}** watched title{'s' if source_count != 1 else ''}"
             release_date=result.get("first_air_date") or result.get("release_date") or ""
@@ -1835,7 +1867,7 @@ async def simkl_recommend(i,type: app_commands.Choice[str] | None = None):
             description="\n".join(lines),
             color=0x5865F2,
         )
-        embed.set_footer(text="Personalized from your SIMKL watch history · TMDB")
+        embed.set_footer(text="Personalized from your SIMKL watch history · IMDb ratings")
         await i.followup.send(embed=embed,ephemeral=True)
 
     except SimklAuthError:
