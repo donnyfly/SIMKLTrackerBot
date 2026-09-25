@@ -865,6 +865,19 @@ class TmdbClient:
 
         return data
 
+    async def get_tv_episode_count(self, series_id) -> int | None:
+        """Return the total number of episodes in a TMDB TV series."""
+        data = await self._get_series_details(series_id)
+        if not data:
+            return None
+
+        try:
+            count = int(data.get("number_of_episodes"))
+        except (TypeError, ValueError):
+            return None
+
+        return count if count > 0 else None
+
     # ------------------------------------------------------------------
     # TV series title
     # ------------------------------------------------------------------
