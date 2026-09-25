@@ -252,7 +252,7 @@ def format_episode_range(s,a,b):
 
 def format_episode_display(s,a,b,use_code=False):
     formatted=format_episode_range(s,a,b)
-    return f"`{formatted}`" if use_code else formatted
+    return f"`{formatted}`" if use_code else f"**{formatted}**"
 def group_consecutive(es):
     es=sorted(es,key=lambda x:x["episode_number"]); groups=[]
     for e in es:
@@ -2160,15 +2160,44 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
     g=guild_id(i)
     if not g: await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     uid=str(i.user.id)
+
+    def settings_text(p, heading):
+        episode_label="Code format (S2E04)" if p.get("episode_code", False) else "Plain text (S2E04)"
+        return (
+            f"{heading}\n"
+            f"1. **Style:** **{p['style'].title()}**\n"
+            f"2. **Activity text:** **{p['activity_text'].title()}**\n"
+            f"3. **Artwork:** **{p['artwork'].title()}**\n"
+            f"4. **Episode numbers:** **{episode_label}**\n"
+            f"5. **IMDb ratings:** **{'On' if p.get('show_imdb', True) else 'Off'}**\n"
+            f"6. **MAL ratings:** **{'On' if p.get('show_mal', True) else 'Off'}**\n"
+            f"7. **Status activities:** **Always use posters**"
+        )
+
     if reset is True:
         await storage.reset_embed_preferences(uid)
         p=await prefs(g,uid)
-        await i.response.send_message(f"Your personal settings have been reset. You now follow the server default for watch activities:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n• Episode numbers: **{'code format' if p.get('episode_code', True) else 'text format'}**\n\nStatus activities always use posters.",ephemeral=True)
+        await i.response.send_message(settings_text(p,"Your personal settings have been reset. You now follow the server default for watch activities:"),ephemeral=True)
         return
+
     if style is None and artwork is None and activity_text is None and episode_format is None:
-        p=await prefs(g,uid); await i.response.send_message(f"Your effective watch activity settings:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n• Episode numbers: **{'code format' if p.get('episode_code', True) else 'text format'}**\n\nStatus activities always use posters.",ephemeral=True); return
-    await storage.set_embed_preferences(uid,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None,episode_code=(episode_format.value == "true") if episode_format else None)
-    p=await prefs(g,uid); await i.response.send_message(f"Your personal watch activity settings are now **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nEpisode numbers use **{'code format' if p.get('episode_code', True) else 'text format'}**.\nThese settings override the server default.\nStatus activities always use posters.",ephemeral=True)
+        p=await prefs(g,uid)
+        await i.response.send_message(settings_text(p,"Your effective watch activity settings:"),ephemeral=True)
+        return
+
+    await storage.set_embed_preferences(
+        uid,
+        style=style.value if style else None,
+        artwork=artwork.value if artwork else None,
+        activity_text=activity_text.value if activity_text else None,
+        episode_code=(episode_format.value == "true") if episode_format else None,
+    )
+    p=await prefs(g,uid)
+    await i.response.send_message(
+        settings_text(p,"Your personal watch activity settings are now:") +
+        "\n\nThese settings override the server default. Status activities always use posters.",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="simkl-style-server",description="(Admin) Set the default style for episode and movie watch activities.")
 @app_commands.choices(style=STYLE_CHOICES,artwork=ARTWORK_CHOICES,activity_text=TEXT_CHOICES,episode_format=EPISODE_FORMAT_CHOICES)
@@ -2176,11 +2205,40 @@ async def simkl_style(i,style: app_commands.Choice[str] | None = None,artwork: a
 async def simkl_style_server(i,style: app_commands.Choice[str] | None = None,artwork: app_commands.Choice[str] | None = None,activity_text: app_commands.Choice[str] | None = None,episode_format: app_commands.Choice[str] | None = None,force_override: bool | None = None):
     g=guild_id(i)
     if not g or not is_admin(i): await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True); return
-    if style is None and artwork is None and activity_text is None and episode_format is None:
-        p=await storage.get_server_embed_preferences(g); forced=await storage.get_server_embed_force_override(g); await i.response.send_message(f"Server default:\n• Style: **{p['style']}**\n• Artwork: **{p['artwork']}**\n• Activity text: **{p['activity_text']}**\n• Episode numbers: **{'code format' if p.get('episode_code', True) else 'text format'}**\n• Force override: **{'enabled' if forced else 'disabled'}**",ephemeral=True); return
-    await storage.set_server_embed_preferences(g,style=style.value if style else None,artwork=artwork.value if artwork else None,activity_text=activity_text.value if activity_text else None,episode_code=(episode_format.value == "true") if episode_format else None,force_override=force_override)
-    p=await storage.get_server_embed_preferences(g); forced=await storage.get_server_embed_force_override(g)
-    await i.response.send_message(f"Server default updated to **{p['style']} / {p['artwork']} / {p['activity_text']}**.\nEpisode numbers use **{'code format' if p.get('episode_code', True) else 'text format'}**.\nForce override is **{'enabled' if forced else 'disabled'}**.",ephemeral=True)
+
+    def settings_text(p, heading, forced=None):
+        episode_label="Code format (S2E04)" if p.get("episode_code", False) else "Plain text (S2E04)"
+        text=(
+            f"{heading}\n"
+            f"1. **Style:** **{p['style'].title()}**\n"
+            f"2. **Activity text:** **{p['activity_text'].title()}**\n"
+            f"3. **Artwork:** **{p['artwork'].title()}**\n"
+            f"4. **Episode numbers:** **{episode_label}**\n"
+            f"5. **IMDb ratings:** **{'On' if p.get('show_imdb', True) else 'Off'}**\n"
+            f"6. **MAL ratings:** **{'On' if p.get('show_mal', True) else 'Off'}**\n"
+            f"7. **Status activities:** **Always use posters**"
+        )
+        if forced is not None:
+            text += f"\n8. **Force override:** **{'Enabled' if forced else 'Disabled'}**"
+        return text
+
+    if style is None and artwork is None and activity_text is None and episode_format is None and force_override is None:
+        p=await storage.get_server_embed_preferences(g)
+        forced=await storage.get_server_embed_force_override(g)
+        await i.response.send_message(settings_text(p,"Server default:",forced),ephemeral=True)
+        return
+
+    await storage.set_server_embed_preferences(
+        g,
+        style=style.value if style else None,
+        artwork=artwork.value if artwork else None,
+        activity_text=activity_text.value if activity_text else None,
+        episode_code=(episode_format.value == "true") if episode_format else None,
+        force_override=force_override,
+    )
+    p=await storage.get_server_embed_preferences(g)
+    forced=await storage.get_server_embed_force_override(g)
+    await i.response.send_message(settings_text(p,"Server default updated:",forced),ephemeral=True)
 
 @bot.tree.command(name="simkl-ratings",description="Configure which ratings are shown in activity embeds.")
 @app_commands.choices(show_imdb=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")],show_mal=[app_commands.Choice(name="Show",value="true"),app_commands.Choice(name="Hide",value="false")])
