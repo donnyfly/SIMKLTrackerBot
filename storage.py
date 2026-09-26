@@ -793,6 +793,66 @@ class Storage:
             await self.flush()
         return True
 
+    async def relock_achievement(
+        self,
+        guild_id: str | int,
+        discord_user_id: str,
+        achievement_id: str,
+    ) -> dict:
+        """Relock an achievement and revoke its XP when no guild still owns the unlock."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild_user = self._guild_user(guild_id, discord_user_id)
+            if not guild_user:
+                return {"relocked": False, "xp_removed": 0}
+
+            achievements = guild_user.setdefault("achievements", {})
+            if achievement_id not in achievements:
+                return {"relocked": False, "xp_removed": 0}
+            del achievements[achievement_id]
+
+            # Achievement unlocks are guild-local, while progression is global.
+            # Keep the global reward if this user still has the same achievement
+            # unlocked in another guild.
+            unlocked_elsewhere = any(
+                str(gid) != str(guild_id)
+                and isinstance(guild, dict)
+                and achievement_id in (
+                    ((guild.get("users") or {}).get(str(discord_user_id)) or {}).get("achievements", {})
+                )
+                for gid, guild in self._data.get("guilds", {}).items()
+            )
+
+            removed = 0
+            global_user = self._user(discord_user_id)
+            if global_user and not unlocked_elsewhere:
+                progression = global_user["progression"]
+                awarded = progression.setdefault("achievement_xp_awarded", {})
+                if achievement_id in awarded:
+                    matching = [
+                        event for event in progression.get("xp_events", [])
+                        if event.get("media_type") == "achievement"
+                        and event.get("achievement_id") == achievement_id
+                    ]
+                    removed = sum(max(0, int(event.get("amount", 0))) for event in matching)
+                    progression["xp_events"] = [
+                        event for event in progression.get("xp_events", [])
+                        if not (
+                            event.get("media_type") == "achievement"
+                            and event.get("achievement_id") == achievement_id
+                        )
+                    ]
+                    awarded.pop(achievement_id, None)
+                    progression["xp"] = max(0, int(progression.get("xp", 0)) - removed)
+                    progression["lifetime_xp"] = max(
+                        0, int(progression.get("lifetime_xp", 0)) - removed
+                    )
+
+            self._dirty = True
+
+        await self.flush()
+        return {"relocked": True, "xp_removed": removed}
+
     async def award_achievement_xp(
         self,
         discord_user_id: str,
