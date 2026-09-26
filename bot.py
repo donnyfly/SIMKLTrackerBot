@@ -1004,19 +1004,6 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         await mark_poll_failure(g,uid,error,previous_failures)
         log.error("Failed validating SIMKL token for user %s: %s: %s",uid,type(exc).__name__,exc)
         return 0
-    member,name=await resolve_member(g,uid)
-    if not member:
-        error=f"Discord member {uid} is no longer in guild {g}"
-        await mark_poll_failure(g,uid,error,previous_failures)
-        log.warning("User %s is no longer a member of guild %s; skipping.",uid,g)
-        return 0
-    try:
-        activities,token=await cached_simkl_activities(uid,u,token,request_cache if request_cache is not None else {})
-    except Exception as exc:
-        error=f"activity fetch: {type(exc).__name__}: {exc}"
-        await mark_poll_failure(g,uid,error,previous_failures)
-        log.error("Failed to get SIMKL activity timestamps for user %s: %s: %s",uid,type(exc).__name__,exc)
-        return 0
     if not gu.get("history_seeded"):
         try:
             async with history_backfill_semaphore:
@@ -1051,7 +1038,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         return 0
 
     progression_after_backfill=await storage.get_progression(uid)
-    if progression_after_backfill.get("history_xp_seeded") and not progression_after_backfill.get("history_xp_notification_sent"):
+    if ch is not None and progression_after_backfill.get("history_xp_seeded") and not progression_after_backfill.get("history_xp_notification_sent"):
         backfill_xp=(
             int(progression_after_backfill.get("xp", 0))
             - int(progression_before_backfill.get("xp", 0))
@@ -1067,6 +1054,14 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         await notify_history_backfill(
             g, uid, backfill_xp, progression_after_backfill, ch
         )
+
+    try:
+        activities,token=await cached_simkl_activities(uid,u,token,request_cache if request_cache is not None else {})
+    except Exception as exc:
+        error=f"activity fetch: {type(exc).__name__}: {exc}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.error("Failed to get SIMKL activity timestamps for user %s: %s: %s",uid,type(exc).__name__,exc)
+        return 0
 
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
@@ -1101,6 +1096,18 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
     # Reconcile achievement state immediately after deleted watch XP is removed.
     # This relocks thresholds that are no longer satisfied and revokes their XP.
     await evaluate_achievements(g,uid)
+
+    if ch is None:
+        await storage.update_poll_health(g,uid,last_success_at=now_iso(),last_error="",
+                                         consecutive_failures=0,flush=True)
+        return 0
+
+    member,name=await resolve_member(g,uid)
+    if not member:
+        error=f"Discord member {uid} is no longer in guild {g}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.warning("User %s is no longer a member of guild %s; skipping activity posts.",uid,g)
+        return 0
 
     posted=0
     cycle_errors=[]
@@ -1170,7 +1177,7 @@ async def poll_all(g=None, force_reconcile=False):
 
 
         if not targets:
-            log.info("Polling cycle: no linked users with configured channels.")
+            log.info("Polling cycle: no linked users.")
             return 0
 
         # Keep all guilds for the same Discord user in one worker. This
@@ -1190,18 +1197,20 @@ async def poll_all(g=None, force_reconcile=False):
 
                 for x in user_targets:
                     gid=x["guild_id"]
-                    ch=bot.get_channel(int(x["channel_id"]))
-                    if ch is None:
+                    channel_id=x["channel_id"]
+                    ch=bot.get_channel(int(channel_id)) if channel_id else None
+                    channel_error=None
+                    if channel_id and ch is None:
                         try:
-                            ch=await bot.fetch_channel(int(x["channel_id"]))
+                            ch=await bot.fetch_channel(int(channel_id))
                         except Exception as exc:
-                            error=f"Discord channel unavailable: {type(exc).__name__}: {exc}"
-                            await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
-                            log.warning("Couldn't access channel %s for guild %s: %s: %s",x["channel_id"],gid,type(exc).__name__,exc)
-                            continue
+                            channel_error=f"Discord channel unavailable: {type(exc).__name__}: {exc}"
+                            log.warning("Couldn't access channel %s for guild %s: %s: %s",channel_id,gid,type(exc).__name__,exc)
 
                     try:
                         posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache,force_reconcile=force_reconcile)
+                        if channel_error:
+                            await mark_poll_failure(gid,uid,channel_error,x["guild_user_data"].get("consecutive_failures",0))
                     except SimklAuthError as exc:
                         error=f"SIMKL authentication failed: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
@@ -2013,6 +2022,10 @@ async def show_profile(i,user):
     await i.response.defer()
     await evaluate_achievements(g,str(target.id))
     stats=await storage.get_statistics(g,str(target.id))
+    history=await storage.get_history_import_state(g,str(target.id))
+    if history["linked"] and not history["complete"] and not (int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))):
+        await i.followup.send("This SIMKL history import is still pending. Watch totals will appear here when it finishes; the bot retries automatically.",ephemeral=True)
+        return
     progression=await storage.get_progression(str(target.id))
     timezone_info=await storage.get_timezone(g)
     unlocked_achievements=await storage.get_achievements(g,str(target.id))
@@ -2077,7 +2090,10 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
     else:
         values.sort(key=lambda row:(-row[category],-row["prestige"],-row["xp"],row["name"].casefold()))
     if not values:
-        await i.followup.send("No leaderboard data has been recorded in this server yet.",ephemeral=True); return
+        pending=sum(not row.get("history_seeded",True) for row in rows)
+        message=(f"History import is pending for **{pending}** linked user(s). Try again after it finishes."
+                 if pending else "No leaderboard data has been recorded in this server yet.")
+        await i.followup.send(message,ephemeral=True); return
     labels={"total":"Total watches","episodes":"Episodes","movies":"Movies","anime":"Anime","xp":"XP progression","level":"Level","prestige":"Prestige"}
     embed=discord.Embed(title=f"{i.guild.name} · {labels[category]}",color=0xEFBE69)
     embed.set_footer(text="Server watch counts · Global XP and prestige · Top 10")
@@ -2208,7 +2224,10 @@ async def simkl_server_stats(i):
         int(row["statistics"].get("episodes_watched",0)) + int(row["statistics"].get("movies_watched",0))
         for row in rows
     ):
-        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True)
+        pending=sum(not row.get("history_seeded",True) for row in rows)
+        message=(f"History import is pending for **{pending}** linked user(s). Try again after it finishes."
+                 if pending else "No watch statistics have been recorded in this server yet.")
+        await i.response.send_message(message,ephemeral=True)
         return
     await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
 
@@ -2914,9 +2933,27 @@ async def simkl_link(i):
             settings=await simkl.get_user_settings(access); aid=account_id_from_settings(settings); username=settings.get("user",{}).get("name") or settings.get("account",{}).get("id") or "SIMKL user"
         except Exception: username="SIMKL user"
         await storage.link_user(g,uid,access,refresh,username,now_iso(),exp,aid)
-        await i.followup.send(f"Linked as {username} in this server.",ephemeral=True)
-        try: await seed_history(g,uid,{"simkl_token":access,"refresh_token":refresh,"token_expires_at":exp},access)
-        except Exception: log.warning("Initial history seed failed.",exc_info=True)
+        await i.followup.send(f"Linked as {username}. Importing your SIMKL watch history now…",ephemeral=True)
+        account={"simkl_token":access,"refresh_token":refresh,"token_expires_at":exp}
+        cache={}
+        try:
+            async with history_backfill_semaphore:
+                token=await seed_history(g,uid,account,access,cache)
+                await seed_progression_history(uid,account,token,cache)
+            stats=await storage.get_statistics(g,uid)
+            progression=await storage.get_progression(uid)
+            total=int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))
+            level=level_progress(int(progression.get("xp",0)))[0]
+            await i.followup.send(
+                f"History import complete: **{total:,} watches**, **{int(progression.get('xp',0)):,} XP**, Level **{level}**. View `/simkl-stats` for details.",
+                ephemeral=True,
+            )
+        except Exception:
+            log.exception("Initial history import failed for user %s in guild %s; polling will retry.",uid,g)
+            await i.followup.send(
+                "Your SIMKL account is linked, but the history import did not finish. The bot will retry automatically; an admin can also run `/simkl-checknow`.",
+                ephemeral=True,
+            )
     finally: linking_users.discard(key)
 
 @bot.tree.command(name="simkl-unlink",description="Unlink your SIMKL account from this server.")
@@ -3083,7 +3120,11 @@ async def simkl_status(i):
         health += f" · last success {last_success}" if last_success else " · no successful poll yet"
         if last_error:
             health += f" · last error: {last_error}"
-        lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**\n  {health}")
+        stats=gu.get("statistics") or {}
+        watches=int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))
+        import_state="complete" if gu.get("history_seeded") else "pending"
+        lines.append(f"• <@{uid}> — SIMKL: **{username}** · token: **{token_state}**"
+                     f" · history: **{import_state}** ({watches:,} watches)\n  {health}")
     linked="\n".join(lines) if lines else "No currently linked accounts."
     tracking_total=len(users)
     stale_note=f" · **{stale_count} stale record(s)**" if stale_count else ""

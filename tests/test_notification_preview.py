@@ -199,6 +199,51 @@ def test_episode_range_records_stats_xp_and_challenges_as_one_group(monkeypatch)
     asyncio.run(scenario())
 
 
+def test_fresh_server_backfills_without_activity_channel(monkeypatch):
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            monkeypatch.setattr(storage_module,"DATA_PATH",f"{directory}/store.json")
+            store=storage_module.Storage()
+            monkeypatch.setattr(bot,"storage",store)
+            for uid in ("41","42","43"):
+                await store.link_user("123",uid,"token",None,uid,"2026-09-26T10:00:00Z",
+                                      simkl_account_id=123)
+            targets=await store.get_poll_targets("123")
+            assert len(targets)==3 and all(row["channel_id"] is None for row in targets)
+            monkeypatch.setattr(bot,"valid_token",AsyncMock(return_value="token"))
+            monkeypatch.setattr(bot,"cached_simkl_activities",AsyncMock(return_value=({},"token")))
+            async def history(uid,user,token,media_type,**kwargs):
+                if media_type!="shows":
+                    return [],token
+                return [{"show":{"title":"Series","ids":{"simkl":99}},"seasons":[{
+                    "number":1,"episodes":[{"number":n,"watched_at":"2026-09-25T10:00:00Z"}
+                                            for n in range(1,11)],
+                }]}],token
+            monkeypatch.setattr(bot,"cached_simkl_items",history)
+            assert await bot.poll_all("123")==0
+            rows=await store.get_guild_statistics("123")
+            assert len(rows)==3
+            assert all(row["statistics"]["episodes_watched"]==10 for row in rows)
+            leaderboard=await store.get_guild_leaderboard_snapshot("123")
+            assert all(row["episodes"]==10 and row["xp"]>0 for row in leaderboard)
+            await store.link_user("123","44","token",None,"44","2026-09-26T10:00:00Z",
+                                  simkl_account_id=123)
+            fail_once=True
+            async def transient_history(uid,user,token,media_type,**kwargs):
+                nonlocal fail_once
+                if uid=="44" and fail_once:
+                    fail_once=False
+                    raise RuntimeError("temporary history fetch failure")
+                return await history(uid,user,token,media_type,**kwargs)
+            monkeypatch.setattr(bot,"cached_simkl_items",transient_history)
+            await bot.poll_all("123")
+            assert not (await store.get_history_import_state("123","44"))["complete"]
+            await bot.poll_all("123")
+            assert (await store.get_history_import_state("123","44"))["complete"]
+            assert (await store.get_statistics("123","44"))["episodes_watched"]==10
+    asyncio.run(scenario())
+
+
 def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
     async def scenario():
         rows=[

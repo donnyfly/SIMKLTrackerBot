@@ -607,7 +607,7 @@ class Storage:
             targets = []
             for gid in guild_ids:
                 guild = self._guild(gid)
-                if not guild or not guild.get("channel_id"):
+                if not guild:
                     continue
                 for uid in guild["users"].keys():
                     user = self._user(uid)
@@ -1000,6 +1000,13 @@ class Storage:
             user = self._guild_user(guild_id, discord_user_id)
             return copy.deepcopy(user["statistics"]) if user else _default_statistics()
 
+    async def get_history_import_state(self, guild_id: str | int, discord_user_id: str) -> dict:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user=self._guild_user(guild_id,discord_user_id)
+            return {"linked":bool(user),"complete":bool(user and user["history_seeded"]),
+                    "last_error":user.get("last_error") if user else None}
+
     async def get_achievements(self, guild_id: str | int, discord_user_id: str) -> dict:
         """Return unlocked achievements keyed by achievement ID."""
         async with _lock:
@@ -1329,6 +1336,7 @@ class Storage:
                     "discord_user_id": uid,
                     "simkl_username": global_user.get("simkl_username", "unknown"),
                     "statistics": copy.deepcopy(user["statistics"]),
+                    "history_seeded":bool(user.get("history_seeded")),
                 })
             return results
 
@@ -1353,6 +1361,7 @@ class Storage:
                     "episodes":int(s.get("episodes_watched",0)),
                     "movies":int(s.get("movies_watched",0)),
                     "anime":int(s.get("anime_episodes_watched",0))+int(s.get("anime_movies_watched",0)),
+                    "history_seeded":bool(user.get("history_seeded")),
                 })
             return rows
 
