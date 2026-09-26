@@ -88,6 +88,13 @@ def test_debug_previews_are_private_and_do_not_write(monkeypatch):
         assert sent["ephemeral"] is True
         assert sent["embed"].title == "Rank Up"
         assert sent["embed"].image.url == "attachment://level-up.gif"
+        prestige=_interaction()
+        await command.callback(prestige, app_commands.Choice(name="Prestige unlocked",value="prestige"), prestige=3)
+        prestige.response.defer.assert_awaited_once_with(ephemeral=True)
+        sent=prestige.followup.send.await_args.kwargs
+        assert sent["ephemeral"] is True
+        assert sent["embed"].image.url == "attachment://prestige.gif"
+        assert "Prestige 3" in sent["embed"].title
         forbidden.assert_not_awaited()
 
     asyncio.run(scenario())
@@ -102,4 +109,32 @@ def test_achievement_notification_falls_back_to_embed(monkeypatch):
         assert send.await_args.kwargs["embed"].image.url is None
         assert send.await_args.kwargs["ephemeral"] is True
 
+    asyncio.run(scenario())
+
+
+def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
+    async def scenario():
+        rows=[
+            {"discord_user_id":"1","simkl_username":"One","xp":900,"prestige":0,"episodes":10,"movies":0,"anime":0},
+            {"discord_user_id":"2","simkl_username":"Two","xp":100,"prestige":1,"episodes":5,"movies":0,"anime":0},
+            {"discord_user_id":"3","simkl_username":"Three","xp":500,"prestige":1,"episodes":8,"movies":0,"anime":0},
+        ]
+        monkeypatch.setattr(bot.storage,"get_guild_leaderboard_snapshot",AsyncMock(return_value=rows))
+        captured=[]
+        def render(guild,category,values):
+            captured.extend(row["discord_user_id"] for row in values)
+            from io import BytesIO
+            return BytesIO(b"preview")
+        monkeypatch.setattr(bot,"render_leaderboard_png",render)
+        interaction=_interaction()
+        interaction.guild.name="Server"
+        interaction.guild.get_member=lambda uid: None
+        command=bot.bot.tree.get_command("simkl-leaderboard")
+        await command.callback(interaction,app_commands.Choice(name="XP / progression",value="xp"))
+        assert captured==["3","2","1"]
+        interaction.response.defer.assert_awaited_once()
+        assert interaction.followup.send.await_args.kwargs["file"].filename=="leaderboard.png"
+        assert bot.bot.tree.get_command("simkl-xp-leaderboard") is None
+        assert bot.bot.tree.get_command("simkl-xp") is None
+        assert bot.bot.tree.get_command("simkl-profile") is not None
     asyncio.run(scenario())

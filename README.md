@@ -48,9 +48,9 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 
 | Command | Permission | What it does |
 | --- | --- | --- |
-| `/simkl-stats` | Everyone | View watch statistics for yourself or another server member |
+| `/simkl-stats`, `/simkl-profile` | Everyone | Render a fresh profile card with watch, XP, streak, and achievement statistics |
 | `/simkl-streak` | Everyone | View your current and longest watch streak |
-| `/simkl-leaderboard` | Everyone | View the server watch leaderboard |
+| `/simkl-leaderboard` | Everyone | View a visual server leaderboard for watches, XP, level, or prestige |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
 | `/simkl-style` | Everyone | Set your personal embed, artwork, text, and rating preferences |
@@ -59,13 +59,10 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-timezone` | Manage Server | View or set the server timezone used for dates, statistics, and streaks |
 | `/simkl-weekly-recap` | Manage Server | Post a weekly watch recap; use the period option to test it immediately |
-| `/simkl-level` | Everyone | View your XP level, rank, prestige, and lifetime XP |
-| `/simkl-xp` | Everyone | View your XP breakdown |
 | `/simkl-challenges` | Everyone | View current daily and weekly watch challenges |
-| `/simkl-xp-leaderboard` | Everyone | View the server XP leaderboard |
 | `/simkl-prestige` | Everyone | Prestige after reaching Level 100 |
 | `/simkl-user-reset` | Everyone | Reset your tracking history for the current server |
-| `/simkl-debug` | Manage Server | Privately preview level-up, rank-up, or achievement notifications without awarding XP |
+| `/simkl-debug` | Manage Server | Privately preview level-up, rank-up, achievement, or prestige notifications without changing progression |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
 ### Weekly Recaps
@@ -89,9 +86,9 @@ Progression has 100 levels per prestige, with ranks ranging from **Newcomer** to
 
 The bot also generates three daily and three weekly watch challenges. Completing a challenge grants bonus XP. Challenge progress is based on watch activity detected by the bot and is tracked separately from the server watch statistics.
 
-Use `/simkl-level`, `/simkl-xp`, `/simkl-challenges`, `/simkl-xp-leaderboard`, and `/simkl-prestige` to view and manage progression.
+Use `/simkl-profile` or `/simkl-stats` to see current XP, level, rank, prestige, lifetime XP, and the XP breakdown. `/simkl-leaderboard category: XP / progression` replaces the old XP leaderboard; `/simkl-challenges` and `/simkl-prestige` remain available. Each prestige gets a distinct color and a rotating insignia. The prestige command posts the animation after a successful reset.
 
-Use `/simkl-debug feature: Level up` to preview the next level, `feature: Rank up` to preview the next rank (or choose a rank boundary with `level`), and `feature: Achievement unlocked` with `achievement` to preview any achievement. Only the admin sees these previews. They use the live notification layout and animated GIF, but do not unlock anything or change XP. The old `/simkl-achievement-test` command has been removed because it awarded real XP without a matching watch history event.
+Use `/simkl-debug feature: Level up` to preview the next level, `feature: Rank up` to preview the next rank (or choose a rank boundary with `level`), `feature: Achievement unlocked` with `achievement` to preview any achievement, and `feature: Prestige unlocked` with an optional `prestige` number. Only the admin sees these previews. They use the live notification layout and animated GIF, but do not unlock anything or change XP.
 
 ## Watch statistics
 
@@ -99,11 +96,11 @@ The bot keeps per-server watch statistics locally in `data/store.json`. Statisti
 
 Available commands:
 
-- `/simkl-stats` — View episode, movie, anime, and streak statistics. You can optionally select another server member.
+- `/simkl-profile` or `/simkl-stats` — Render the same profile PNG on each request. It includes level, rank, current and lifetime XP, XP breakdown, prestige, episode and movie counts, anime counts, streaks, achievements, recent and top titles, active days, last 30 days, and top genres when genre metadata is available. You can optionally select another member.
 - `/simkl-streak` — View current and longest watch streaks.
-- `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, or anime.
+- `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, anime, XP progression, level, or prestige. Each row shows prestige, level, current XP, and total watches.
 
-Statistics are local and do not require additional SIMKL API requests after the activity data has already been retrieved for normal polling.
+Profiles and leaderboards render from the latest locally recorded polling data; opening them does not make a new SIMKL API request. Historical title records lack genre metadata, so top genres appear as "No genre data yet" until SIMKL supplies genre tags for subsequently recorded watches.
 
 ### Embed customization
 

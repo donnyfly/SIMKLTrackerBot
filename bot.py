@@ -10,7 +10,8 @@ from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
 from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
-from level_visuals import accent_for_level, render_achievement_gif, render_level_up_gif
+from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif, render_prestige_gif
+from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -246,7 +247,7 @@ def iter_show_episodes(t,items):
                 en=ep.get("number")
                 if en is None: continue
                 wr=ep.get("watched_at")
-                yield {"show_title":show.get("title","a show"),"simkl_id":sid,"tmdb_id":ids.get("tmdb"),"tvdb_id":ids.get("tvdb"),"slug":ids.get("slug"),"poster":show.get("poster"),"season_num":sn,"original_season_num":original,"mapped_tvdb_season_num":mapped_season,"episode_number":en,"episode_title":ep.get("title"),"watched_raw":wr,"watched_dt":parse_iso(wr) if wr else None,"key":episode_key(t,sid,sn,en)}
+                yield {"show_title":show.get("title","a show"),"genres":show.get("genres") or item.get("genres") or [],"simkl_id":sid,"tmdb_id":ids.get("tmdb"),"tvdb_id":ids.get("tvdb"),"slug":ids.get("slug"),"poster":show.get("poster"),"season_num":sn,"original_season_num":original,"mapped_tvdb_season_num":mapped_season,"episode_number":en,"episode_title":ep.get("title"),"watched_raw":wr,"watched_dt":parse_iso(wr) if wr else None,"key":episode_key(t,sid,sn,en)}
 
 def format_episode_range(s,a,b):
     if s is None: return f"E{a:02d}" if a==b else f"E{a:02d}-E{b:02d}"
@@ -430,7 +431,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
                 if x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
                 if wr:
                     watches[k]=wr
-                    seeded_stats.append(("anime_movie" if (m.get("anime_type") == "movie" or m.get("type") == "movie" or (m.get("ids") or {}).get("mal")) else "movie", m.get("title") or "Untitled", k, wr))
+                    seeded_stats.append(("anime_movie" if (m.get("anime_type") == "movie" or m.get("type") == "movie" or (m.get("ids") or {}).get("mal")) else "movie", m.get("title") or "Untitled", k, wr, m.get("genres") or x.get("genres")))
         else:
             episode_items=items
             movie_items=[]
@@ -446,16 +447,16 @@ async def seed_history(g,uid,u,token,request_cache=None):
                 if x.get("status"): statuses[f"movies:{sid}"]=x["status"]
                 if wr:
                     watches[k]=wr
-                    seeded_stats.append(("anime_movie",m.get("title") or "Untitled",k,wr))
+                    seeded_stats.append(("anime_movie",m.get("title") or "Untitled",k,wr,m.get("genres") or x.get("genres")))
             for e in iter_show_episodes(t,episode_items):
                 if e["watched_dt"] is None or e["watched_dt"]<=since:
                     keys.append(e["key"])
                     if e.get("watched_raw"):
                         watches[e["key"]]=e["watched_raw"]
-                        seeded_stats.append(("anime_episode" if t == "anime" else "episode",e.get("show_title") or "Untitled",f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}",e["watched_raw"]))
+                        seeded_stats.append(("anime_episode" if t == "anime" else "episode",e.get("show_title") or "Untitled",f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}",e["watched_raw"],e.get("genres")))
     await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches,flush=False)
-    for media_type,title,key,watched_at in seeded_stats:
-        await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False)
+    for media_type,title,key,watched_at,genres in seeded_stats:
+        await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False,genres=genres)
         await award_watch_progression(uid, f"{media_type}:{key}:{watched_at}", media_type, title, watched_at)
     await storage.flush()
     await evaluate_achievements(g,uid)
@@ -543,7 +544,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             await storage.add_announced(g,uid,keys)
             await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
             for watched in grp:
-                await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False)
+                await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False,genres=watched.get("genres"))
                 await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"], runtime_by_key.get(watched["key"]))
             pending.update(watch_times)
             count+=len(grp)
@@ -645,7 +646,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
             continue
         await storage.add_announced(g,uid,[k])
         await storage.update_activity_state(g,uid,watch_times={k:wr},flush=False)
-        await storage.record_watch(g,uid,"anime_movie" if anime_movie else "movie",title,k,wr,flush=False)
+        await storage.record_watch(g,uid,"anime_movie" if anime_movie else "movie",title,k,wr,flush=False,genres=m.get("genres") or x.get("genres"))
         await award_watch_progression(uid, f"{'anime_movie' if anime_movie else 'movie'}:{k}:{wr}", "anime_movie" if anime_movie else "movie", title, wr)
         pending[k]=wr
         count+=1
@@ -1387,6 +1388,34 @@ async def send_achievement_notification(send, mention, achievement_id, *, previe
             return False
 
 
+async def send_prestige_notification(send, mention, prestige, lifetime_xp, *, preview=False):
+    accent,_=prestige_style(prestige)
+    embed=discord.Embed(
+        title=f"Prestige {prestige} Unlocked",
+        description=(f"{mention} reached **Prestige {prestige}**. Your level starts again at **1**; "
+                     f"your lifetime **{int(lifetime_xp):,} XP** is preserved."),
+        color=discord.Color.from_rgb(*accent),
+    )
+    embed.set_footer(text="SIMKL Tracker · Prestige")
+    options={"allowed_mentions": discord.AllowedMentions(users=not preview, roles=False, everyone=False)}
+    if preview:
+        options["ephemeral"]=True
+    try:
+        animation=await asyncio.to_thread(render_prestige_gif, prestige)
+        embed.set_image(url="attachment://prestige.gif")
+        await send(embed=embed, file=discord.File(animation, filename="prestige.gif"), **options)
+        return True
+    except Exception:
+        log.exception("Prestige animation failed for prestige %s; trying embed fallback.", prestige)
+        embed.set_image(url=None)
+        try:
+            await send(embed=embed, **options)
+            return True
+        except Exception:
+            log.exception("Prestige fallback notification failed for prestige %s.", prestige)
+            return False
+
+
 async def notify_level_up(guild_id_value, uid, before_progression, after_progression, channel, *, preview_interaction=None):
     if channel is None:
         log.warning("Level-up notification skipped for user %s: no channel.", uid)
@@ -1509,18 +1538,6 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
 
-async def format_watch_stats(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
-    current,longest=calculate_streaks(statistics.get("watch_dates"), timezone_name)
-    episodes=int(statistics.get("episodes_watched",0))
-    movies=int(statistics.get("movies_watched",0))
-    anime_episodes=int(statistics.get("anime_episodes_watched",0))
-    anime_movies=int(statistics.get("anime_movies_watched",0))
-    return (f"📺 Episodes watched: **{episodes:,}**\n"
-            f"🎬 Movies watched: **{movies:,}**\n"
-            f"🌸 Anime episodes: **{anime_episodes:,}**\n"
-            f"🎞️ Anime movies: **{anime_movies:,}**\n"
-            f"🔥 Current streak: **{current} day{'s' if current != 1 else ''}**\n"
-            f"🏆 Longest streak: **{longest} day{'s' if longest != 1 else ''}**")
 def weekly_period(timezone_name, period="current"):
     try:
         tz=ZoneInfo(timezone_name)
@@ -1727,22 +1744,6 @@ def progression_embed(uid, progression, title="SIMKL Progression"):
     e.description = f"**Level {level} — {rank}**\n\n{bar}\n**{progress_text}**\n\n**Prestige:** {prestige}\n**Lifetime XP:** {lifetime:,}"
     return e
 
-@bot.tree.command(name="simkl-xp", description="View your SIMKL level, rank, and XP.")
-async def simkl_xp(i):
-    if i.guild:
-        await evaluate_achievements(i.guild.id, str(i.user.id))
-    progression = await storage.get_progression(str(i.user.id))
-    events = progression.get("xp_events", [])
-    watch_xp = sum(int(e.get("amount", 0)) for e in events if e.get("media_type") in {"episode", "anime_episode", "movie", "anime_movie"})
-    achievement_xp = sum(int(e.get("amount", 0)) for e in events if e.get("media_type") == "achievement")
-    challenge_xp = sum(int(v.get("xp", 0)) for p in progression.get("challenge_completions", {}).values() for v in p.values())
-    e = progression_embed(str(i.user.id), progression, "SIMKL XP")
-    e.add_field(name="Watching", value=f"+{watch_xp:,} XP", inline=True)
-    e.add_field(name="Achievements", value=f"+{achievement_xp:,} XP", inline=True)
-    e.add_field(name="Challenges", value=f"+{challenge_xp:,} XP", inline=True)
-    e.add_field(name="Recorded XP events", value=f"{len(events):,}", inline=False)
-    await i.response.send_message(embed=e)
-
 @bot.tree.command(name="simkl-challenges", description="View your current daily and weekly watch challenges.")
 async def simkl_challenges(i):
     uid = str(i.user.id)
@@ -1782,33 +1783,12 @@ async def simkl_prestige(i):
     if level < 100:
         await i.response.send_message(f"You need Level 100 to prestige. You are currently Level {level}.", ephemeral=True)
         return
-    await storage.prestige_user(uid)
+    await i.response.defer()
+    if not await storage.prestige_user(uid):
+        await i.followup.send("Could not update prestige. Please try again.", ephemeral=True)
+        return
     updated = await storage.get_progression(uid)
-    e = progression_embed(uid, updated, "Prestige Unlocked")
-    e.description = f'**Prestige {updated.get("prestige", 0)}**\n\nYour level progression has been reset to Level 1. Your lifetime XP remains intact.\n\n{e.description}'
-    await i.response.send_message(embed=e)
-
-@bot.tree.command(name="simkl-xp-leaderboard", description="View the server XP leaderboard.")
-async def simkl_xp_leaderboard(i):
-    if not i.guild:
-        await i.response.send_message("This command must be used in a server.", ephemeral=True)
-        return
-    data = await storage.get_all()
-    guild_users = (data.get("guilds", {}).get(str(i.guild.id), {}).get("users", {}) or {})
-    rows = []
-    for uid in guild_users:
-        p = (data.get("users", {}).get(str(uid), {}) or {}).get("progression", {})
-        xp = int(p.get("xp", 0))
-        prestige = int(p.get("prestige", 0))
-        level = level_progress(xp)[0]
-        rows.append((xp, prestige, level, uid))
-    rows.sort(key=lambda x: (-x[1], -x[0], x[3]))
-    if not rows:
-        await i.response.send_message("No progression data has been recorded yet.")
-        return
-    lines = [f"**{n}.** <@{uid}> — P{prestige} L{level} · {xp:,} XP" for n, (xp, prestige, level, uid) in enumerate(rows[:10], 1)]
-    e = discord.Embed(title=f"{i.guild.name} · XP Leaderboard", description="\n".join(lines), color=0x5865F2)
-    await i.response.send_message(embed=e)
+    await send_prestige_notification(i.followup.send, i.user.mention, updated.get("prestige", 0), updated.get("lifetime_xp", 0))
 
 @bot.tree.command(name="simkl-user-reset",description="Reset your SIMKL tracking history for this server.")
 @app_commands.describe(confirm="Confirm that you want to reset your server-local tracking state")
@@ -1901,6 +1881,7 @@ async def simkl_achievements(i,user: discord.Member | None = None):
         app_commands.Choice(name="Level up", value="level"),
         app_commands.Choice(name="Rank up", value="rank"),
         app_commands.Choice(name="Achievement unlocked", value="achievement"),
+        app_commands.Choice(name="Prestige unlocked", value="prestige"),
     ],
     achievement=ACHIEVEMENT_CHOICES,
 )
@@ -1908,12 +1889,14 @@ async def simkl_achievements(i,user: discord.Member | None = None):
     feature="Notification to preview",
     achievement="Required for an achievement preview",
     level="Optional target level (2-100) for a level/rank preview",
+    prestige="Optional prestige number (1-1000) to preview",
 )
 async def simkl_debug(
     i,
     feature: app_commands.Choice[str],
     achievement: app_commands.Choice[str] | None = None,
     level: app_commands.Range[int, 2, 100] | None = None,
+    prestige: app_commands.Range[int, 1, 1000] | None = None,
 ):
     if not guild_id(i) or not is_admin(i):
         await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
@@ -1925,11 +1908,21 @@ async def simkl_debug(
         if level is not None:
             await i.response.send_message("The level option is only for level and rank previews.",ephemeral=True)
             return
+        if prestige is not None:
+            await i.response.send_message("The prestige option is only for a prestige preview.",ephemeral=True)
+            return
     elif achievement is not None:
         await i.response.send_message("The achievement option is only for achievement previews.",ephemeral=True)
         return
-    elif feature.value not in {"level", "rank"}:
+    elif feature.value not in {"level", "rank", "prestige"}:
         await i.response.send_message("Unknown preview feature.", ephemeral=True)
+        return
+
+    if feature.value != "prestige" and prestige is not None:
+        await i.response.send_message("The prestige option is only for a prestige preview.",ephemeral=True)
+        return
+    if feature.value == "prestige" and level is not None:
+        await i.response.send_message("The level option is only for level and rank previews.",ephemeral=True)
         return
 
     if feature.value in {"level", "rank"}:
@@ -1947,6 +1940,10 @@ async def simkl_debug(
     await i.response.defer(ephemeral=True)
     if feature.value == "achievement":
         sent=await send_achievement_notification(i.followup.send, i.user.mention, achievement.value, preview=True)
+    elif feature.value == "prestige":
+        current=await storage.get_progression(str(i.user.id))
+        number=prestige if prestige is not None else int(current.get("prestige", 0)) + 1
+        sent=await send_prestige_notification(i.followup.send, i.user.mention, number, current.get("lifetime_xp", 0), preview=True)
     else:
         sent=await notify_level_up(
             i.guild.id, str(i.user.id),
@@ -1957,24 +1954,49 @@ async def simkl_debug(
     if not sent:
         await i.followup.send("Could not send the preview. Check the bot's permissions and logs.", ephemeral=True)
 
-@bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
-@app_commands.describe(user="Optional server member to view")
-async def simkl_stats(i,user: discord.Member | None = None):
+async def show_profile(i,user):
     g=guild_id(i)
     if not g:
         await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     target=user or i.user
+    await i.response.defer()
+    await evaluate_achievements(g,str(target.id))
     stats=await storage.get_statistics(g,str(target.id))
-    if not stats.get("watch_dates") and not stats.get("titles"):
-        await i.response.send_message(f"No watch statistics have been recorded for {target.mention} in this server yet.",ephemeral=True); return
+    progression=await storage.get_progression(str(target.id))
     timezone_info=await storage.get_timezone(g)
-    embed=discord.Embed(title=f"{target.display_name}'s Watch Stats",description=await format_watch_stats(stats, timezone_info["name"]),color=0x5865F2)
     unlocked_achievements=await storage.get_achievements(g,str(target.id))
-    achievement_xp=sum(int(achievement.get("xp",0)) for aid,achievement in all_achievements() if aid in unlocked_achievements)
-    embed.add_field(name="🏆 Achievements",value=f"**{len(unlocked_achievements):,}/{len(ACHIEVEMENTS):,} unlocked**\n💎 **{achievement_xp:,} XP earned**",inline=False)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.set_footer(text="SIMKLTrackerBot · All-time statistics")
-    await i.response.send_message(embed=embed)
+    current,longest=calculate_streaks(stats.get("watch_dates"),timezone_info["name"])
+    today=datetime.now(ZoneInfo(timezone_info["name"])).date()
+    data=profile_snapshot(stats,progression,unlocked_achievements,current,longest,today=today)
+    embed=discord.Embed(
+        title=f"{target.display_name}'s SIMKL Profile",
+        description=(f"Level **{data['level']}** · **{data['rank']}** · Prestige **{data['prestige']}**\n"
+                     f"**{data['xp']:,} XP** · **{data['total']:,} watches** · "
+                     f"**{data['achievements']}/{data['achievement_total']} achievements**"),
+        color=discord.Color.from_rgb(*(prestige_style(data["prestige"])[0] if data["prestige"] else accent_for_level(data["level"]))),
+    )
+    try:
+        image=await asyncio.to_thread(render_profile_png,target.display_name,data)
+        embed.set_image(url="attachment://profile.png")
+        await i.followup.send(embed=embed,file=discord.File(image,filename="profile.png"))
+    except Exception:
+        log.exception("Could not send profile image for %s; sending embed fallback.",target.id)
+        embed.set_image(url=None)
+        embed.add_field(name="Watching",value=f"{data['episodes']:,} episodes · {data['movies']:,} movies · {data['anime_episodes']:,} anime episodes · {data['anime_movies']:,} anime movies",inline=False)
+        embed.add_field(name="Streak",value=f"{current} current · {longest} longest",inline=False)
+        await i.followup.send(embed=embed)
+
+
+@bot.tree.command(name="simkl-stats",description="Show a visual SIMKL profile with watches, XP, and achievements.")
+@app_commands.describe(user="Optional server member to view")
+async def simkl_stats(i,user: discord.Member | None = None):
+    await show_profile(i,user)
+
+
+@bot.tree.command(name="simkl-profile",description="Show a visual SIMKL profile with watches, XP, and achievements.")
+@app_commands.describe(user="Optional server member to view")
+async def simkl_profile(i,user: discord.Member | None = None):
+    await show_profile(i,user)
 
 
 @bot.tree.command(name="simkl-streak",description="Show your SIMKL watch streak.")
@@ -1997,6 +2019,9 @@ LEADERBOARD_CHOICES=[
     app_commands.Choice(name="Episodes",value="episodes"),
     app_commands.Choice(name="Movies",value="movies"),
     app_commands.Choice(name="Anime",value="anime"),
+    app_commands.Choice(name="XP / progression",value="xp"),
+    app_commands.Choice(name="Level",value="level"),
+    app_commands.Choice(name="Prestige",value="prestige"),
 ]
 
 @bot.tree.command(name="simkl-leaderboard",description="Show the server's SIMKL watch leaderboard.")
@@ -2006,32 +2031,35 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
     if not g:
         await i.response.send_message("This command must be used in a server.",ephemeral=True); return
     category=category.value if category else "total"
-    rows=await storage.get_guild_statistics(g)
+    await i.response.defer()
+    rows=await storage.get_guild_leaderboard_snapshot(g)
     values=[]
     for row in rows:
-        stats=row["statistics"]
-        if category=="episodes":
-            value=int(stats.get("episodes_watched",0))
-        elif category=="movies":
-            value=int(stats.get("movies_watched",0))
-        elif category=="anime":
-            value=int(stats.get("anime_episodes_watched",0))+int(stats.get("anime_movies_watched",0))
-        else:
-            value=stats_total(stats)
-        if value>0:
-            values.append((value,row["discord_user_id"],row["simkl_username"]))
-    values.sort(key=lambda x:(-x[0],x[2].lower()))
+        row["total"]=row["episodes"]+row["movies"]
+        row["level"]=level_progress(row["xp"])[0]
+        value=row[category]
+        if value>0 or (category in {"xp","level","prestige"} and (row["total"]>0 or row["xp"]>0 or row["prestige"]>0)):
+            member=i.guild.get_member(int(row["discord_user_id"]))
+            row["name"]=member.display_name if member else row["simkl_username"]
+            values.append(row)
+    if category in {"xp","level","prestige"}:
+        values.sort(key=lambda row:(-row["prestige"],-row["xp"],row["name"].casefold()))
+    else:
+        values.sort(key=lambda row:(-row[category],-row["prestige"],-row["xp"],row["name"].casefold()))
     if not values:
-        await i.response.send_message("No watch statistics have been recorded in this server yet.",ephemeral=True); return
-    lines=[]
-    medals=["🥇","🥈","🥉"]
-    for index,(value,uid,username) in enumerate(values[:10]):
-        prefix=medals[index] if index<3 else f"**{index+1}.**"
-        lines.append(f"{prefix} <@{uid}> — **{value:,}**")
-    labels={"total":"Total watches","episodes":"Episodes","movies":"Movies","anime":"Anime"}
-    embed=discord.Embed(title=f"🏆 {i.guild.name} · {labels[category]}",description="\n".join(lines),color=0xF1C40F)
-    embed.set_footer(text="All-time statistics · Top 10")
-    await i.response.send_message(embed=embed)
+        await i.followup.send("No leaderboard data has been recorded in this server yet.",ephemeral=True); return
+    labels={"total":"Total watches","episodes":"Episodes","movies":"Movies","anime":"Anime","xp":"XP progression","level":"Level","prestige":"Prestige"}
+    embed=discord.Embed(title=f"{i.guild.name} · {labels[category]}",color=0xEFBE69)
+    embed.set_footer(text="Server watch counts · Global XP and prestige · Top 10")
+    try:
+        image=await asyncio.to_thread(render_leaderboard_png,i.guild.name,labels[category],values[:10])
+        embed.set_image(url="attachment://leaderboard.png")
+        await i.followup.send(embed=embed,file=discord.File(image,filename="leaderboard.png"))
+    except Exception:
+        log.exception("Could not send leaderboard image for guild %s; sending embed fallback.",g)
+        embed.set_image(url=None)
+        embed.description="\n".join(f"**{n}.** <@{r['discord_user_id']}> · P{r['prestige']} L{r['level']} · {r['xp']:,} XP · {r['total']:,} watches" for n,r in enumerate(values[:10],1))
+        await i.followup.send(embed=embed)
 
 
 def build_server_stats(rows, guild_name):

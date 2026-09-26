@@ -7,6 +7,7 @@ It returns an in-memory GIF that discord.py can attach directly to a message.
 from __future__ import annotations
 
 from io import BytesIO
+import colorsys
 import math
 
 from PIL import Image, ImageDraw, ImageFont
@@ -44,6 +45,75 @@ _RANK_ACCENTS = {name: color for (_, name), color in zip(RANKS, _RANK_COLORS)}
 def accent_for_level(level: int) -> tuple[int, int, int]:
     """Return the shared accent of the rank containing this level."""
     return _RANK_ACCENTS[rank_for_level(level)]
+
+
+def prestige_style(prestige: int) -> tuple[tuple[int, int, int], int]:
+    """A rotating emblem and a distinct hue for successive prestiges."""
+    prestige = max(1, int(prestige))
+    hue = ((prestige - 1) * 0.61803398875 + 0.115) % 1.0
+    rgb = colorsys.hsv_to_rgb(hue, 0.55, 0.95)
+    return tuple(round(channel * 255) for channel in rgb), (prestige - 1) % 6
+
+
+def _prestige_emblem(draw: ImageDraw.ImageDraw, cx: int, cy: int, style: int):
+    """Six crisp geometric insignias that survive GIF palette conversion."""
+    if style == 0:  # crown
+        draw.polygon(((cx - 18, cy - 8), (cx - 10, cy + 4), (cx, cy - 8), (cx + 10, cy + 4), (cx + 18, cy - 8), (cx + 15, cy + 13), (cx - 15, cy + 13)), fill=_TEXT)
+        draw.rectangle((cx - 15, cy + 15, cx + 15, cy + 19), fill=_TEXT)
+    elif style == 1:  # star
+        points=[]
+        for i in range(10):
+            angle=-math.pi / 2 + i * math.pi / 5
+            radius=19 if i % 2 == 0 else 8
+            points.append((cx + round(math.cos(angle) * radius), cy + round(math.sin(angle) * radius)))
+        draw.polygon(points, fill=_TEXT)
+    elif style == 2:  # diamond
+        draw.polygon(((cx, cy - 19), (cx + 18, cy), (cx, cy + 19), (cx - 18, cy)), fill=_TEXT)
+        draw.line(((cx - 18, cy), (cx + 18, cy)), fill=_PANEL, width=2)
+    elif style == 3:  # orbit
+        draw.ellipse((cx - 15, cy - 15, cx + 15, cy + 15), outline=_TEXT, width=4)
+        draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), fill=_TEXT)
+        draw.ellipse((cx + 12, cy - 17, cx + 20, cy - 9), fill=_TEXT)
+    elif style == 4:  # shield
+        draw.polygon(((cx, cy - 19), (cx + 17, cy - 11), (cx + 13, cy + 10), (cx, cy + 20), (cx - 13, cy + 10), (cx - 17, cy - 11)), fill=_TEXT)
+        draw.line(((cx, cy - 11), (cx, cy + 11)), fill=_PANEL, width=3)
+    else:  # sun
+        draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=_TEXT)
+        for i in range(8):
+            angle=i * math.pi / 4
+            draw.line(((cx + round(math.cos(angle) * 15), cy + round(math.sin(angle) * 15)), (cx + round(math.cos(angle) * 21), cy + round(math.sin(angle) * 21))), fill=_TEXT, width=3)
+
+
+def render_prestige_gif(prestige: int) -> BytesIO:
+    prestige=max(1, int(prestige))
+    accent, emblem=prestige_style(prestige)
+    soft=_mix(_PANEL, accent, 0.55)
+    frames=[]
+    for index in range(FRAMES):
+        t=index / (FRAMES - 1)
+        reveal=_ease_out_cubic(t / 0.72)
+        pulse=math.sin(t * math.pi) ** 2
+        image=Image.new("RGB", (WIDTH, HEIGHT), _BG)
+        draw=ImageDraw.Draw(image)
+        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=_LINE)
+        draw.rounded_rectangle((48, HEIGHT - 35, 48 + int((WIDTH - 96) * reveal), HEIGHT - 31), radius=2, fill=accent)
+        cx,cy=132,137
+        for ring in range(3):
+            phase=max(0.0, min(1.0, t * 1.35 - ring * 0.12))
+            radius=34 + int(phase * 54)
+            draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), outline=_mix(_PANEL,soft,(1-phase)*0.8), width=2)
+        radius=27 + int(4*pulse)
+        draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), fill=_mix(soft,accent,0.55 + pulse*0.4))
+        _prestige_emblem(draw,cx,cy,emblem)
+        draw.text((230,58),"PRESTIGE UNLOCKED",font=_font(18),fill=accent)
+        draw.text((230,82),str(prestige),font=_font(78),fill=_mix(_MUTED,_TEXT,reveal))
+        draw.text((234,180),"A NEW CHAPTER",font=_font(26),fill=_TEXT)
+        draw.text((234,212),"LEVEL RESET TO 1",font=_font(15),fill=accent)
+        frames.append(image)
+    output=BytesIO()
+    frames[0].save(output,format="GIF",save_all=True,append_images=frames[1:],duration=DURATION_MS,loop=0,optimize=True,disposal=2)
+    output.seek(0)
+    return output
 
 
 def _font(size: int):

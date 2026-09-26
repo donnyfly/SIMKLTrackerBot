@@ -11,6 +11,7 @@ import json
 import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from progression import level_from_xp
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
 
@@ -729,6 +730,8 @@ class Storage:
             user = self._user(discord_user_id)
             if not user:
                 return False
+            if level_from_xp(int(user["progression"].get("xp", 0))) < 100:
+                return False
             user["progression"]["xp"] = 0
             user["progression"]["prestige"] = int(user["progression"].get("prestige", 0)) + 1
             self._dirty = True
@@ -896,6 +899,7 @@ class Storage:
         item_key: str,
         watched_at: str,
         flush: bool = True,
+        genres=None,
     ) -> None:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
@@ -942,6 +946,16 @@ class Storage:
             title_record["type"] = media_type
             title_record["count"] = int(title_record.get("count", 0)) + 1
             title_record["last_watched"] = watched_at
+            if genres:
+                names=[]
+                if isinstance(genres, (str, dict)):
+                    genres=[genres]
+                for value in genres:
+                    name=value.get("name") if isinstance(value, dict) else value
+                    if isinstance(name, str) and name.strip():
+                        names.append(name.strip().title())
+                if names:
+                    title_record["genres"] = sorted(set(names))
             self._dirty = True
         if flush:
             await self.flush()
@@ -1099,6 +1113,30 @@ class Storage:
                     "statistics": copy.deepcopy(user["statistics"]),
                 })
             return results
+
+    async def get_guild_leaderboard_snapshot(self, guild_id: str | int) -> list[dict]:
+        """Read only the scalar fields needed for a ranked board in one lock."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild=self._guild(guild_id)
+            if not guild:
+                return []
+            rows=[]
+            for uid, user in guild["users"].items():
+                _normalise_guild_user(user)
+                global_user=self._user(uid) or {}
+                p=global_user.get("progression") or {}
+                s=user["statistics"]
+                rows.append({
+                    "discord_user_id":uid,
+                    "simkl_username":global_user.get("simkl_username") or "Unknown",
+                    "xp":int(p.get("xp",0)),
+                    "prestige":int(p.get("prestige",0)),
+                    "episodes":int(s.get("episodes_watched",0)),
+                    "movies":int(s.get("movies_watched",0)),
+                    "anime":int(s.get("anime_episodes_watched",0))+int(s.get("anime_movies_watched",0)),
+                })
+            return rows
 
     async def set_account_id(self, discord_user_id: str, simkl_account_id: int | str) -> None:
         async with _lock:
