@@ -14,7 +14,8 @@ os.environ.setdefault("TMDB_API_KEY", "test-key")
 
 import bot  # noqa: E402
 from achievements import ACHIEVEMENTS  # noqa: E402
-from level_visuals import render_achievement_gif  # noqa: E402
+from level_visuals import accent_for_level, render_achievement_gif, render_level_up_gif  # noqa: E402
+from progression import RANKS, rank_for_level  # noqa: E402
 
 
 def _interaction():
@@ -38,6 +39,23 @@ def test_achievement_animation_renders_every_defined_name():
         assert image.n_frames > 1
         assert image.info["duration"] >= 60
         assert len(animation.getvalue()) < 8_000_000
+
+
+def test_level_animation_uses_each_rank_color():
+    accents=[accent_for_level(minimum) for minimum, _ in RANKS]
+    assert len(set(accents)) == len(RANKS)
+    assert all(accent_for_level(minimum + 1) == color for (minimum, _), color in zip(RANKS, accents))
+    footer_colors=[]
+    for minimum in (1, 10, 50, 90):
+        level=max(2, minimum)
+        animation=render_level_up_gif(
+            level, rank_for_level(level), previous_level=level - 1,
+            previous_rank=rank_for_level(level - 1),
+        )
+        image=Image.open(animation)
+        image.seek(image.n_frames - 1)
+        footer_colors.append(image.convert("RGB").getpixel((400, 247)))
+    assert len(set(footer_colors)) == 4
 
 
 def test_debug_previews_are_private_and_do_not_write(monkeypatch):

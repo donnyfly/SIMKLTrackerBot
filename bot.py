@@ -10,7 +10,7 @@ from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
 from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
-from level_visuals import render_achievement_gif, render_level_up_gif
+from level_visuals import accent_for_level, render_achievement_gif, render_level_up_gif
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -1431,7 +1431,7 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
     embed = discord.Embed(
         title=title,
         description=description,
-        color=0x7986FF,
+        color=discord.Color.from_rgb(*accent_for_level(after_level)),
     )
     embed.set_footer(text="SIMKL Tracker · Progression")
     send = preview_interaction.followup.send if preview_interaction else channel.send
