@@ -152,9 +152,9 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("simkl_username", "unknown")
     user.setdefault("simkl_account_id", None)
     user.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
-    user.setdefault("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}})
+    user.setdefault("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}})
     if not isinstance(user["progression"], dict):
-        user["progression"] = {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}}
+        user["progression"] = {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}}
     progression = user["progression"]
     progression.setdefault("xp", 0)
     progression.setdefault("lifetime_xp", 0)
@@ -162,9 +162,11 @@ def _normalise_user(user: dict) -> None:
     progression.setdefault("watch_xp_keys", {})
     progression.setdefault("xp_events", [])
     progression.setdefault("challenge_completions", {})
+    progression.setdefault("achievement_xp_awarded", {})
     if not isinstance(progression["watch_xp_keys"], dict): progression["watch_xp_keys"] = {}
     if not isinstance(progression["xp_events"], list): progression["xp_events"] = []
     if not isinstance(progression["challenge_completions"], dict): progression["challenge_completions"] = {}
+    if not isinstance(progression["achievement_xp_awarded"], dict): progression["achievement_xp_awarded"] = {}
 
     prefs = user["embed_preferences"]
     if not isinstance(prefs, dict):
@@ -702,6 +704,40 @@ class Storage:
             await self.flush()
         return True
 
+    async def award_achievement_xp(
+        self,
+        discord_user_id: str,
+        achievement_id: str,
+        amount: int,
+        title: str,
+        awarded_at: str,
+    ) -> dict:
+        """Award achievement XP exactly once, including for old unlocks."""
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return {"awarded": False, "amount": 0, "progression": {}}
+            progression = user["progression"]
+            awarded = progression.setdefault("achievement_xp_awarded", {})
+            if achievement_id in awarded:
+                return {"awarded": False, "amount": 0, "progression": copy.deepcopy(progression)}
+            xp = max(0, int(amount))
+            awarded[achievement_id] = awarded_at
+            progression["xp"] = int(progression.get("xp", 0)) + xp
+            progression["lifetime_xp"] = int(progression.get("lifetime_xp", 0)) + xp
+            progression["xp_events"].append({
+                "at": awarded_at,
+                "amount": xp,
+                "media_type": "achievement",
+                "title": title or "Achievement",
+                "event_key": f"achievement:{achievement_id}",
+                "achievement_id": achievement_id,
+            })
+            self._dirty = True
+            result = copy.deepcopy(progression)
+        await self.flush()
+        return {"awarded": True, "amount": xp, "progression": result}
+
     async def record_watch(
         self,
         guild_id: str | int,
@@ -847,7 +883,7 @@ class Storage:
                 personal = {
                     "embed_preferences": copy.deepcopy(existing.get("embed_preferences", DEFAULT_EMBED_PREFERENCES)),
                     "embed_preferences_custom": existing.get("embed_preferences_custom", False),
-                    "progression": copy.deepcopy(existing.get("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}})),
+                    "progression": copy.deepcopy(existing.get("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}})),
                 }
             else:
                 personal = {
