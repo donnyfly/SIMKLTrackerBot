@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
-from progression import challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
-from level_visuals import render_level_up_gif
+from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
+from level_visuals import render_achievement_gif, render_level_up_gif
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -1229,7 +1229,7 @@ def achievement_progress_from_events(events, timezone_name=DEFAULT_TIMEZONE_NAME
     }
 
 
-async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
+async def evaluate_achievements(g, uid, notify_channel=None):
     """Keep achievement locks and rewards in sync with current SIMKL history."""
     timezone_info=await storage.get_timezone(g)
     progression=await storage.get_progression(uid)
@@ -1244,12 +1244,7 @@ async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
 
     for achievement_id, achievement in all_achievements():
         already_unlocked=achievement_id in unlocked
-        if force_id is not None:
-            if achievement_id != force_id:
-                continue
-            qualifies=True
-        else:
-            qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
+        qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
 
         if not qualifies:
             if already_unlocked:
@@ -1286,19 +1281,8 @@ async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
         guild=bot.get_guild(int(g))
         member=guild.get_member(int(uid)) if guild else None
         mention=member.mention if member else f"<@{uid}>"
-        names=[f"{ACHIEVEMENTS[aid]['emoji']} **{ACHIEVEMENTS[aid]['name']}**" for aid in newly_unlocked]
-        embed=discord.Embed(
-            title="🏆 Achievement Unlocked!",
-            description=f"{mention} unlocked:\n" + "\n".join(names),
-            color=0xF1C40F,
-        )
         for aid in newly_unlocked:
-            embed.add_field(
-                name=ACHIEVEMENTS[aid]["name"],
-                value=f'{ACHIEVEMENTS[aid]["description"]}\n**Reward:** +{int(ACHIEVEMENTS[aid].get("xp", 0)):,} XP',
-                inline=False,
-            )
-        await notify_channel.send(embed=embed)
+            await send_achievement_notification(notify_channel.send, mention, aid)
 
     return newly_unlocked
 
@@ -1363,7 +1347,47 @@ async def award_watch_progression(uid, event_key, media_type, title, watched_at,
             await storage.complete_challenge(uid, challenge["id"], weekly_key, challenge["xp"])
     return int(result.get("amount", 0))
 
-async def notify_level_up(guild_id_value, uid, before_progression, after_progression, channel):
+def achievement_notification_embed(mention, achievement_id):
+    achievement=ACHIEVEMENTS[achievement_id]
+    embed=discord.Embed(
+        title="🏆 Achievement Unlocked!",
+        description=f"{mention} unlocked {achievement['emoji']} **{achievement['name']}**",
+        color=0xF1C40F,
+    )
+    embed.add_field(
+        name="Achievement",
+        value=f'{achievement["description"]}\n**Reward:** +{int(achievement.get("xp", 0)):,} XP',
+        inline=False,
+    )
+    embed.set_footer(text="SIMKL Tracker · Achievements")
+    return embed
+
+
+async def send_achievement_notification(send, mention, achievement_id, *, preview=False):
+    achievement=ACHIEVEMENTS[achievement_id]
+    embed=achievement_notification_embed(mention, achievement_id)
+    options={
+        "allowed_mentions": discord.AllowedMentions(users=not preview, roles=False, everyone=False),
+    }
+    if preview:
+        options["ephemeral"]=True
+    try:
+        animation=await asyncio.to_thread(render_achievement_gif, achievement["name"], achievement.get("xp", 0))
+        embed.set_image(url="attachment://achievement.gif")
+        await send(embed=embed, file=discord.File(animation, filename="achievement.gif"), **options)
+        return True
+    except Exception:
+        log.exception("Animated achievement notification failed for %s; trying embed fallback.", achievement_id)
+        embed.set_image(url=None)
+        try:
+            await send(embed=embed, **options)
+            return True
+        except Exception:
+            log.exception("Fallback achievement notification failed for %s.", achievement_id)
+            return False
+
+
+async def notify_level_up(guild_id_value, uid, before_progression, after_progression, channel, *, preview_interaction=None):
     if channel is None:
         log.warning("Level-up notification skipped for user %s: no channel.", uid)
         return False
@@ -1383,7 +1407,7 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
         return False
 
     guild = bot.get_guild(int(guild_id_value))
-    member = guild.get_member(int(uid)) if guild else None
+    member = preview_interaction.user if preview_interaction else (guild.get_member(int(uid)) if guild else None)
     if member is None and guild:
         try:
             member = await guild.fetch_member(int(uid))
@@ -1410,9 +1434,14 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
         color=0x7986FF,
     )
     embed.set_footer(text="SIMKL Tracker · Progression")
+    send = preview_interaction.followup.send if preview_interaction else channel.send
+    options = {"allowed_mentions": discord.AllowedMentions(users=preview_interaction is None, roles=False, everyone=False)}
+    if preview_interaction:
+        options["ephemeral"] = True
 
     try:
-        animation = render_level_up_gif(
+        animation = await asyncio.to_thread(
+            render_level_up_gif,
             after_level,
             after_rank,
             previous_level=before_level,
@@ -1420,10 +1449,10 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
         )
         file = discord.File(animation, filename="level-up.gif")
         embed.set_image(url="attachment://level-up.gif")
-        await channel.send(
+        await send(
             embed=embed,
             file=file,
-            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            **options,
         )
         log.info(
             "Sent animated level-up notification for user %s in guild %s: level %d -> %d%s.",
@@ -1444,9 +1473,9 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
         )
         embed.set_image(url=None)
         try:
-            await channel.send(
+            await send(
                 embed=embed,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                **options,
             )
             log.info(
                 "Sent fallback level-up notification for user %s in guild %s: level %d.",
@@ -1865,24 +1894,68 @@ async def simkl_achievements(i,user: discord.Member | None = None):
     await i.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="simkl-achievement-test",description="(Admin) Test-unlock a SIMKL achievement.")
-@app_commands.choices(achievement=ACHIEVEMENT_CHOICES)
-@app_commands.describe(achievement="Achievement to unlock for yourself")
-async def simkl_achievement_test(i,achievement: app_commands.Choice[str]):
+@bot.tree.command(name="simkl-debug",description="(Admin) Privately preview progression notifications without changing XP.")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(
+    feature=[
+        app_commands.Choice(name="Level up", value="level"),
+        app_commands.Choice(name="Rank up", value="rank"),
+        app_commands.Choice(name="Achievement unlocked", value="achievement"),
+    ],
+    achievement=ACHIEVEMENT_CHOICES,
+)
+@app_commands.describe(
+    feature="Notification to preview",
+    achievement="Required for an achievement preview",
+    level="Optional target level (2-100) for a level/rank preview",
+)
+async def simkl_debug(
+    i,
+    feature: app_commands.Choice[str],
+    achievement: app_commands.Choice[str] | None = None,
+    level: app_commands.Range[int, 2, 100] | None = None,
+):
     if not guild_id(i) or not is_admin(i):
         await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
         return
-    g=guild_id(i)
-    unlocked=await evaluate_achievements(g,str(i.user.id),force_id=achievement.value)
-    if not unlocked:
-        await i.response.send_message("That achievement is already unlocked for you.",ephemeral=True)
+    if feature.value == "achievement":
+        if achievement is None or achievement.value not in ACHIEVEMENTS:
+            await i.response.send_message("Choose an achievement to preview.",ephemeral=True)
+            return
+        if level is not None:
+            await i.response.send_message("The level option is only for level and rank previews.",ephemeral=True)
+            return
+    elif achievement is not None:
+        await i.response.send_message("The achievement option is only for achievement previews.",ephemeral=True)
         return
-    a=ACHIEVEMENTS[achievement.value]
-    await i.response.send_message(
-        f"🧪 Test unlocked {a['emoji']} **{a['name']}** for you. "
-        "This does not change your watch statistics.",
-        ephemeral=True,
-    )
+    elif feature.value not in {"level", "rank"}:
+        await i.response.send_message("Unknown preview feature.", ephemeral=True)
+        return
+
+    if feature.value in {"level", "rank"}:
+        if level is None:
+            current=level_progress(int((await storage.get_progression(str(i.user.id))).get("xp", 0)))[0]
+            if feature.value == "rank":
+                level=next((minimum for minimum, _ in RANKS if minimum > current), RANKS[-1][0])
+            else:
+                level=min(100, max(2, current + 1))
+        if feature.value == "rank" and rank_for_level(level - 1) == rank_for_level(level):
+            await i.response.send_message("Choose a rank boundary: level 10, 20, 30, …, or 90.",ephemeral=True)
+            return
+
+    # Defer before rendering; GIF generation can exceed Discord's initial response window.
+    await i.response.defer(ephemeral=True)
+    if feature.value == "achievement":
+        sent=await send_achievement_notification(i.followup.send, i.user.mention, achievement.value, preview=True)
+    else:
+        sent=await notify_level_up(
+            i.guild.id, str(i.user.id),
+            {"xp": xp_for_level(level - 1) if level > 2 else 0},
+            {"xp": xp_for_level(level)}, i.channel,
+            preview_interaction=i,
+        )
+    if not sent:
+        await i.followup.send("Could not send the preview. Check the bot's permissions and logs.", ephemeral=True)
 
 @bot.tree.command(name="simkl-stats",description="Show your SIMKL watch statistics.")
 @app_commands.describe(user="Optional server member to view")
@@ -3012,4 +3085,3 @@ async def polling_loop():
             retry_delay=min(retry_delay*2,POLL_MAX_RETRY_DELAY_SECONDS)
             next_run=time.monotonic()
 if __name__=="__main__": bot.run(DISCORD_BOT_TOKEN, log_handler=None)
-

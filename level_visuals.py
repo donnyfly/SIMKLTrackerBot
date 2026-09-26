@@ -1,4 +1,4 @@
-"""Minimal animated level-up cards for Discord notifications.
+"""Minimal animated progression cards for Discord notifications.
 
 The renderer is deliberately self-contained: no remote assets, fonts, or image hosts.
 It returns an in-memory GIF that discord.py can attach directly to a message.
@@ -121,6 +121,62 @@ def render_level_up_gif(
         loop=0,
         optimize=True,
         disposal=2,
+    )
+    output.seek(0)
+    return output
+
+
+def render_achievement_gif(name: str, xp: int) -> BytesIO:
+    """Render an achievement card in the same visual language as level-ups."""
+    name = str(name or "Achievement")
+    xp = max(0, int(xp))
+    gold = (239, 193, 104)
+    gold_soft = (111, 80, 45)
+    title_font = _font(18)
+    name_size = 36
+    while name_size > 20:
+        name_font = _font(name_size)
+        if ImageDraw.Draw(Image.new("RGB", (1, 1))).textbbox((0, 0), name, font=name_font)[2] <= WIDTH - 280:
+            break
+        name_size -= 2
+    name_font = _font(name_size)
+    xp_font = _font(26)
+    small_font = _font(15)
+    frames: list[Image.Image] = []
+
+    for index in range(FRAMES):
+        t = index / max(FRAMES - 1, 1)
+        reveal = _ease_out_cubic(min(1.0, t / 0.72))
+        pulse = math.sin(t * math.pi) ** 2
+        image = Image.new("RGB", (WIDTH, HEIGHT), _BG)
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=_LINE, width=1)
+        line_y = HEIGHT - 35
+        line_end = 48 + int((WIDTH - 96) * reveal)
+        draw.rounded_rectangle((48, line_y, line_end, line_y + 4), radius=2, fill=gold)
+
+        cx, cy = 132, 137
+        for ring in range(3):
+            phase = max(0.0, min(1.0, t * 1.35 - ring * 0.12))
+            radius = 34 + int(phase * 54)
+            ring_color = _mix(_PANEL, gold_soft, max(0.0, 1.0 - phase) * 0.8)
+            draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=ring_color, width=2)
+        core_radius = 27 + int(4 * pulse)
+        draw.ellipse((cx - core_radius, cy - core_radius, cx + core_radius, cy + core_radius), fill=_mix(gold_soft, gold, 0.55 + pulse * 0.4))
+        # A simple diamond reads clearly in GIF without relying on emoji fonts.
+        draw.polygon(((cx, cy - 13), (cx + 13, cy), (cx, cy + 13), (cx - 13, cy)), fill=_TEXT)
+
+        x = 230
+        draw.text((x, 58), "ACHIEVEMENT UNLOCKED", font=title_font, fill=gold)
+        draw.text((x, 93), name, font=name_font, fill=_mix(_MUTED, _TEXT, reveal))
+        draw.text((x + 4, 175), f"+{xp:,} XP", font=xp_font, fill=gold)
+        draw.text((x + 4, 213), "SIMKL TRACKER", font=small_font, fill=_MUTED)
+        frames.append(image)
+
+    output = BytesIO()
+    frames[0].save(
+        output, format="GIF", save_all=True, append_images=frames[1:],
+        duration=DURATION_MS, loop=0, optimize=True, disposal=2,
     )
     output.seek(0)
     return output

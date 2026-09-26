@@ -65,6 +65,7 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-xp-leaderboard` | Everyone | View the server XP leaderboard |
 | `/simkl-prestige` | Everyone | Prestige after reaching Level 100 |
 | `/simkl-user-reset` | Everyone | Reset your tracking history for the current server |
+| `/simkl-debug` | Manage Server | Privately preview level-up, rank-up, or achievement notifications without awarding XP |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
 ### Weekly Recaps
@@ -89,6 +90,8 @@ Progression has 100 levels per prestige, with ranks ranging from **Newcomer** to
 The bot also generates three daily and three weekly watch challenges. Completing a challenge grants bonus XP. Challenge progress is based on watch activity detected by the bot and is tracked separately from the server watch statistics.
 
 Use `/simkl-level`, `/simkl-xp`, `/simkl-challenges`, `/simkl-xp-leaderboard`, and `/simkl-prestige` to view and manage progression.
+
+Use `/simkl-debug feature: Level up` to preview the next level, `feature: Rank up` to preview the next rank (or choose a rank boundary with `level`), and `feature: Achievement unlocked` with `achievement` to preview any achievement. Only the admin sees these previews. They use the live notification layout and animated GIF, but do not unlock anything or change XP. The old `/simkl-achievement-test` command has been removed because it awarded real XP without a matching watch history event.
 
 ## Watch statistics
 
