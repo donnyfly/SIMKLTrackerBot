@@ -67,13 +67,14 @@ def profile_snapshot(stats, progression, achievements, current_streak, longest_s
     watch_xp=sum(int(e.get("amount",0)) for e in events if e.get("media_type") in {"episode","anime_episode","movie","anime_movie"})
     achievement_xp=sum(int(e.get("amount",0)) for e in events if e.get("media_type")=="achievement")
     challenge_xp=sum(int(c.get("xp",0)) for values in (progression.get("challenge_completions") or {}).values() for c in values.values())
+    community_xp=sum(int(value) for value in (progression.get("community_rewards") or {}).values())
     top_genres=sorted(genres.items(),key=lambda item:(-item[1],item[0]))[:3]
     top_titles=sorted(title_counts.items(),key=lambda item:(-item[1],item[0]))[:3]
     return {
         "level":level,"rank":rank_for_level(level),"xp":int(progression.get("xp",0)),
         "xp_within":within,"xp_needed":needed,"prestige":int(progression.get("prestige",0)),
         "lifetime_xp":int(progression.get("lifetime_xp",0)),
-        "watch_xp":watch_xp,"achievement_xp":achievement_xp,"challenge_xp":challenge_xp,
+        "watch_xp":watch_xp,"achievement_xp":achievement_xp,"challenge_xp":challenge_xp,"community_xp":community_xp,
         "episodes":episodes,"movies":movies,"total":episodes+movies,
         "anime_episodes":int(stats.get("anime_episodes_watched",0)),
         "anime_movies":int(stats.get("anime_movies_watched",0)),
@@ -132,9 +133,10 @@ def render_profile_png(name, data):
 
     _panel(draw,(48,913,1032,1030))
     draw.text((75,929),"XP BREAKDOWN & RECENT WATCH",font=_font(17),fill=accent)
-    draw.text((75,960),f"Watching  {data['watch_xp']:,} XP",font=_font(18),fill=WHITE)
-    draw.text((400,960),f"Achievements  {data['achievement_xp']:,} XP",font=_font(18),fill=WHITE)
-    draw.text((765,960),f"Challenges  {data['challenge_xp']:,} XP",font=_font(18),fill=WHITE)
+    draw.text((75,960),f"Watch {data['watch_xp']:,}",font=_font(17),fill=WHITE)
+    draw.text((305,960),f"Achievements {data['achievement_xp']:,}",font=_font(17),fill=WHITE)
+    draw.text((580,960),f"Challenges {data['challenge_xp']:,}",font=_font(17),fill=WHITE)
+    draw.text((810,960),f"Community {data['community_xp']:,}",font=_font(17),fill=WHITE)
     draw.text((75,994),"LATEST",font=_font(15),fill=MUTED)
     draw.text((150,992),_short(draw,data["recent_title"],_font(18),850),font=_font(18),fill=WHITE)
 

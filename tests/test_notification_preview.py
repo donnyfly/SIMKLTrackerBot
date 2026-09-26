@@ -14,7 +14,7 @@ os.environ.setdefault("TMDB_API_KEY", "test-key")
 
 import bot  # noqa: E402
 from achievements import ACHIEVEMENTS  # noqa: E402
-from level_visuals import accent_for_level, render_achievement_gif, render_level_up_gif  # noqa: E402
+from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif  # noqa: E402
 from progression import RANKS, rank_for_level  # noqa: E402
 
 
@@ -88,6 +88,16 @@ def test_debug_previews_are_private_and_do_not_write(monkeypatch):
         assert sent["ephemeral"] is True
         assert sent["embed"].title == "Rank Up"
         assert sent["embed"].image.url == "attachment://level-up.gif"
+        selected=_interaction()
+        await command.callback(
+            selected,app_commands.Choice(name="Level up",value="level"),
+            level=43,rank=app_commands.Choice(name="Dedicated Viewer",value=40),prestige=6,
+        )
+        selected.response.defer.assert_awaited_once_with(ephemeral=True)
+        sent=selected.followup.send.await_args.kwargs
+        assert "Prestige **6**" in sent["embed"].description
+        assert "Level 43" in sent["embed"].description
+        assert sent["embed"].color.value == int.from_bytes(bytes(prestige_style(6)[0]),"big")
         prestige=_interaction()
         await command.callback(prestige, app_commands.Choice(name="Prestige unlocked",value="prestige"), prestige=3)
         prestige.response.defer.assert_awaited_once_with(ephemeral=True)
@@ -134,7 +144,9 @@ def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
         assert captured==["3","2","1"]
         interaction.response.defer.assert_awaited_once()
         assert interaction.followup.send.await_args.kwargs["file"].filename=="leaderboard.png"
+        assert "embed" not in interaction.followup.send.await_args.kwargs
         assert bot.bot.tree.get_command("simkl-xp-leaderboard") is None
         assert bot.bot.tree.get_command("simkl-xp") is None
-        assert bot.bot.tree.get_command("simkl-profile") is not None
+        assert bot.bot.tree.get_command("simkl-profile") is None
+        assert bot.bot.tree.get_command("simkl-community") is not None
     asyncio.run(scenario())

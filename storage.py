@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from progression import level_from_xp
+from community import episode_contributions, split_pool
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
 
@@ -57,6 +58,7 @@ def _default_guild() -> dict:
         "force_embed_preferences": False,
         "timezone": None,
         "weekly_recap_last_sent": None,
+        "community_challenges": {},
         "users": {},
     }
 
@@ -163,6 +165,7 @@ def _normalise_user(user: dict) -> None:
     progression.setdefault("watch_xp_keys", {})
     progression.setdefault("xp_events", [])
     progression.setdefault("challenge_completions", {})
+    progression.setdefault("community_rewards", {})
     progression.setdefault("achievement_xp_awarded", {})
     progression.setdefault("history_xp_seeded", False)
     progression.setdefault("history_xp_notification_sent", False)
@@ -170,6 +173,7 @@ def _normalise_user(user: dict) -> None:
     if not isinstance(progression["watch_xp_keys"], dict): progression["watch_xp_keys"] = {}
     if not isinstance(progression["xp_events"], list): progression["xp_events"] = []
     if not isinstance(progression["challenge_completions"], dict): progression["challenge_completions"] = {}
+    if not isinstance(progression["community_rewards"], dict): progression["community_rewards"] = {}
     if not isinstance(progression["achievement_xp_awarded"], dict): progression["achievement_xp_awarded"] = {}
     progression["history_xp_seeded"] = bool(progression.get("history_xp_seeded", False))
 
@@ -249,6 +253,9 @@ def _normalise_guild(guild: dict) -> None:
     guild.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
     guild.setdefault("force_embed_preferences", False)
     guild.setdefault("timezone", None)
+    guild.setdefault("community_challenges", {})
+    if not isinstance(guild["community_challenges"], dict):
+        guild["community_challenges"] = {}
     guild.setdefault("weekly_recap_last_sent", None)
     if guild.get("timezone") is not None and not isinstance(guild.get("timezone"), str):
         guild["timezone"] = None
@@ -1137,6 +1144,75 @@ class Storage:
                     "anime":int(s.get("anime_episodes_watched",0))+int(s.get("anime_movies_watched",0)),
                 })
             return rows
+
+    async def get_community_state(self, guild_id: str | int, week_key: str, start: datetime, end: datetime, now: datetime) -> dict:
+        """Create a fixed weekly goal and reconcile ended-week rewards atomically."""
+        gid=str(guild_id)
+        changes=[]
+        async with _lock:
+            self._migrate_legacy_guild_locked(gid)
+            guild=self._guild(gid)
+            if not guild:
+                return {}
+            records=guild.setdefault("community_challenges", {})
+            if week_key not in records:
+                target=max(25,20*len(guild.get("users") or {}))
+                records[week_key]={
+                    "start":start.isoformat(),"end":end.isoformat(),
+                    "target":target,"pool":target*300,
+                    "members":sorted(guild.get("users") or {}),"awards":{},
+                }
+                self._dirty=True
+            current=records[week_key]
+            members=set(current.get("members") or []) | set(guild.get("users") or {})
+            if now < end and sorted(members) != current.get("members"):
+                current["members"]=sorted(members)
+                self._dirty=True
+
+            def counts_for(record):
+                period_start=datetime.fromisoformat(record["start"])
+                period_end=datetime.fromisoformat(record["end"])
+                return episode_contributions(self._data["users"],record.get("members") or [],period_start,period_end)
+
+            for key,record in records.items():
+                period_end=datetime.fromisoformat(record["end"])
+                if now < period_end:
+                    continue
+                contributions=counts_for(record)
+                desired=(split_pool(contributions,int(record["pool"]))
+                         if sum(contributions.values()) >= int(record["target"]) else {})
+                previous=record.get("awards") or {}
+                if desired==previous:
+                    continue
+                for uid in sorted(set(previous)|set(desired)):
+                    user=self._user(uid)
+                    if not user:
+                        continue
+                    before=int(user["progression"].get("xp",0))
+                    delta=int(desired.get(uid,0))-int(previous.get(uid,0))
+                    user["progression"]["xp"]=max(0,before+delta)
+                    user["progression"]["lifetime_xp"]=max(0,int(user["progression"].get("lifetime_xp",0))+delta)
+                    reward_key=f"{gid}:{key}"
+                    if desired.get(uid):
+                        user["progression"].setdefault("community_rewards",{})[reward_key]=int(desired[uid])
+                    else:
+                        user["progression"].setdefault("community_rewards",{}).pop(reward_key,None)
+                    if delta:
+                        changes.append({"uid":uid,"before":before,"after":user["progression"]["xp"],"delta":delta})
+                record["awards"]=desired
+                self._dirty=True
+            contributions=counts_for(current)
+            total=sum(contributions.values())
+            state={
+                "key":week_key,"start":current["start"],"end":current["end"],
+                "target":int(current["target"]),"pool":int(current["pool"]),
+                "contributions":contributions,"total":total,
+                "awards":copy.deepcopy(current.get("awards") or {}),
+                "status":("completed" if current.get("awards") else "missed") if now >= end else ("goal_reached" if total >= int(current["target"]) else "active"),
+                "changes":changes,
+            }
+        await self.flush()
+        return state
 
     async def set_account_id(self, discord_user_id: str, simkl_account_id: int | str) -> None:
         async with _lock:

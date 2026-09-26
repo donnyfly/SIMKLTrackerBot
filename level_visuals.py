@@ -167,6 +167,7 @@ def render_level_up_gif(
     *,
     previous_level: int | None = None,
     previous_rank: str | None = None,
+    prestige: int = 0,
 ) -> BytesIO:
     """Render a compact animated GIF for a level-up notification."""
 
@@ -174,8 +175,10 @@ def render_level_up_gif(
     previous_level = max(1, int(previous_level or max(1, level - 1)))
     rank = str(rank or "Newcomer")
     rank_up = bool(previous_rank and previous_rank != rank)
+    prestige = max(0, int(prestige))
     previous_accent = accent_for_level(previous_level)
     next_accent = accent_for_level(level)
+    prestige_accent, prestige_emblem = prestige_style(prestige) if prestige else (None, None)
 
     frames: list[Image.Image] = []
     title_font = _font(18)
@@ -194,7 +197,8 @@ def render_level_up_gif(
         draw = ImageDraw.Draw(image)
 
         # Quiet panel with a thin animated signal line.
-        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=_LINE, width=1)
+        border=_mix(_LINE,prestige_accent,0.35) if prestige_accent else _LINE
+        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=border, width=1)
         # Give the signal sweep its own footer lane so it never crosses labels.
         line_y = HEIGHT - 35
         line_end = 48 + int((WIDTH - 96) * reveal)
@@ -217,6 +221,12 @@ def render_level_up_gif(
         x = 230
         title = "RANK UP" if rank_up else "LEVEL UP"
         draw.text((x, 58), title, font=title_font, fill=accent)
+        if prestige:
+            badge=f"PRESTIGE {prestige}"
+            width=draw.textbbox((0,0),badge,font=small_font)[2]
+            draw.text((WIDTH - 52 - width, 60), badge, font=small_font, fill=prestige_accent)
+            draw.ellipse((620,113,678,171),fill=_mix(_PANEL,prestige_accent,0.8))
+            _prestige_emblem(draw,649,142,prestige_emblem)
 
         displayed_level = previous_level if t < 0.18 else level
         level_color = _mix(_MUTED, _TEXT, reveal)

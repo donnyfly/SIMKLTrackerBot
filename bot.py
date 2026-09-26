@@ -12,6 +12,7 @@ from achievements import ACHIEVEMENTS, all_achievements
 from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
 from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif, render_prestige_gif
 from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png
+from community import community_week
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -1165,6 +1166,11 @@ async def poll_all(g=None, force_reconcile=False):
             *(process_user(uid,user_targets) for uid,user_targets in users.items())
         )
         posted=sum(results)
+        for gid in sorted({str(target["guild_id"]) for target in targets}):
+            try:
+                await refresh_community_state(gid)
+            except Exception:
+                log.exception("Community challenge reconciliation failed for guild %s.",gid)
         duration=time.monotonic()-started
         log.info(
             "Polling cycle complete: %d user(s), %d target(s), %d posted, %.2fs elapsed, concurrency=%d.",
@@ -1454,13 +1460,16 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
     if levels_gained > 1:
         description += f" · **+{levels_gained} levels**"
     description += f"\n**{after_rank}**"
+    after_prestige=int(after_progression.get("prestige",0))
+    if after_prestige:
+        description += f" · Prestige **{after_prestige}**"
     if rank_up:
         description += f"\n\n*New rank unlocked from {before_rank}.*"
 
     embed = discord.Embed(
         title=title,
         description=description,
-        color=discord.Color.from_rgb(*accent_for_level(after_level)),
+        color=discord.Color.from_rgb(*(prestige_style(int(after_progression.get("prestige",0)))[0] if int(after_progression.get("prestige",0)) else accent_for_level(after_level))),
     )
     embed.set_footer(text="SIMKL Tracker · Progression")
     send = preview_interaction.followup.send if preview_interaction else channel.send
@@ -1475,6 +1484,7 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
             after_rank,
             previous_level=before_level,
             previous_rank=before_rank,
+            prestige=after_prestige,
         )
         file = discord.File(animation, filename="level-up.gif")
         embed.set_image(url="attachment://level-up.gif")
@@ -1537,6 +1547,21 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
 
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
+
+
+async def refresh_community_state(guild_id_value):
+    zone=(await storage.get_timezone(guild_id_value))["name"]
+    now=datetime.now(timezone.utc)
+    key,start,end=community_week(now,zone)
+    state=await storage.get_community_state(guild_id_value,key,start,end,now)
+    for change in state.get("changes",[]):
+        if change["delta"] <= 0:
+            continue
+        channel_id=await storage.get_channel(guild_id_value)
+        channel=bot.get_channel(int(channel_id)) if channel_id else None
+        if channel:
+            await notify_level_up(guild_id_value,change["uid"],{"xp":change["before"]},{"xp":change["after"]},channel)
+    return state
 
 def weekly_period(timezone_name, period="current"):
     try:
@@ -1770,10 +1795,44 @@ async def simkl_challenges(i):
         return "\n".join(out)
 
     e = discord.Embed(title="SIMKL Challenges", color=0x5865F2)
-    e.add_field(name="Daily", value=lines(daily, daily_key, ds, de), inline=False)
-    e.add_field(name="Weekly", value=lines(weekly, weekly_key, ws, we), inline=False)
-    e.set_footer(text="Challenges use your recorded watch activity and refresh automatically.")
+    daily_reset=datetime(today.year,today.month,today.day,tzinfo=timezone.utc)+timedelta(days=1)
+    weekly_reset=datetime(monday.year,monday.month,monday.day,tzinfo=timezone.utc)+timedelta(days=7)
+    e.add_field(name="Daily", value=f"Resets {discord.utils.format_dt(daily_reset,style='R')} · {discord.utils.format_dt(daily_reset,style='F')}\n"+lines(daily,daily_key,ds,de), inline=False)
+    e.add_field(name="Weekly", value=f"Resets {discord.utils.format_dt(weekly_reset,style='R')} · {discord.utils.format_dt(weekly_reset,style='F')}\n"+lines(weekly,weekly_key,ws,we), inline=False)
+    e.set_footer(text="Daily and weekly challenges reset at 00:00 UTC.")
     await i.response.send_message(embed=e)
+
+
+@bot.tree.command(name="simkl-community", description="View this server's weekly cooperative episode challenge.")
+async def simkl_community(i):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+    await i.response.defer()
+    state=await refresh_community_state(g)
+    if not state:
+        await i.followup.send("No community challenge is available yet.",ephemeral=True)
+        return
+    total=state["total"]
+    target=state["target"]
+    filled=min(20,round(20*total/target))
+    bar="█"*filled+"░"*(20-filled)
+    ends=datetime.fromisoformat(state["end"])
+    contributors=sorted(state["contributions"].items(),key=lambda item:(-item[1],item[0]))
+    rows=[f"<@{uid}> · **{count:,}** episode{'s' if count!=1 else ''}" for uid,count in contributors[:10]]
+    description=(f"**Watch {target:,} episodes together this week**\n{bar}\n"
+                 f"**{total:,} / {target:,}** episodes · **{state['pool']:,} XP pool**\n"
+                 f"Ends {discord.utils.format_dt(ends,style='R')} · {discord.utils.format_dt(ends,style='F')}\n\n"
+                 f"Your contribution: **{state['contributions'].get(str(i.user.id),0):,}** episodes")
+    if state["status"]=="goal_reached":
+        description+="\n**Goal reached!** The pool is distributed by contribution after the week ends."
+    elif state["status"]=="active":
+        description+="\nContribute at least one episode before the deadline to qualify if the goal is reached."
+    e=discord.Embed(title=f"{i.guild.name} · Community Challenge",description=description,color=0xC9DCF0)
+    e.add_field(name="Contributors",value="\n".join(rows) if rows else "No episodes contributed yet.",inline=False)
+    e.set_footer(text="Server-local weekly goal · bonus XP is added to normal watch XP")
+    await i.followup.send(embed=e,allowed_mentions=discord.AllowedMentions.none())
 
 @bot.tree.command(name="simkl-prestige", description="Prestige after reaching Level 100.")
 async def simkl_prestige(i):
@@ -1884,19 +1943,22 @@ async def simkl_achievements(i,user: discord.Member | None = None):
         app_commands.Choice(name="Prestige unlocked", value="prestige"),
     ],
     achievement=ACHIEVEMENT_CHOICES,
+    rank=[app_commands.Choice(name=name,value=minimum) for minimum,name in RANKS],
 )
 @app_commands.describe(
     feature="Notification to preview",
     achievement="Required for an achievement preview",
     level="Optional target level (2-100) for a level/rank preview",
-    prestige="Optional prestige number (1-1000) to preview",
+    rank="Optional rank to preview; a chosen level must belong to it",
+    prestige="Optional prestige tier (0-1000) for a level/rank preview, or 1-1000 for prestige",
 )
 async def simkl_debug(
     i,
     feature: app_commands.Choice[str],
     achievement: app_commands.Choice[str] | None = None,
     level: app_commands.Range[int, 2, 100] | None = None,
-    prestige: app_commands.Range[int, 1, 1000] | None = None,
+    rank: app_commands.Choice[int] | None = None,
+    prestige: app_commands.Range[int, 0, 1000] | None = None,
 ):
     if not guild_id(i) or not is_admin(i):
         await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
@@ -1905,8 +1967,8 @@ async def simkl_debug(
         if achievement is None or achievement.value not in ACHIEVEMENTS:
             await i.response.send_message("Choose an achievement to preview.",ephemeral=True)
             return
-        if level is not None:
-            await i.response.send_message("The level option is only for level and rank previews.",ephemeral=True)
+        if level is not None or rank is not None:
+            await i.response.send_message("Level and rank options are only for progression previews.",ephemeral=True)
             return
         if prestige is not None:
             await i.response.send_message("The prestige option is only for a prestige preview.",ephemeral=True)
@@ -1918,23 +1980,25 @@ async def simkl_debug(
         await i.response.send_message("Unknown preview feature.", ephemeral=True)
         return
 
-    if feature.value != "prestige" and prestige is not None:
-        await i.response.send_message("The prestige option is only for a prestige preview.",ephemeral=True)
-        return
-    if feature.value == "prestige" and level is not None:
-        await i.response.send_message("The level option is only for level and rank previews.",ephemeral=True)
+    if feature.value == "prestige" and (level is not None or rank is not None or prestige == 0):
+        await i.response.send_message("For a prestige unlock preview, choose a prestige from 1 to 1000 without a level or rank.",ephemeral=True)
         return
 
     if feature.value in {"level", "rank"}:
+        current_progression=await storage.get_progression(str(i.user.id))
         if level is None:
-            current=level_progress(int((await storage.get_progression(str(i.user.id))).get("xp", 0)))[0]
+            current=level_progress(int(current_progression.get("xp", 0)))[0]
             if feature.value == "rank":
-                level=next((minimum for minimum, _ in RANKS if minimum > current), RANKS[-1][0])
+                level=rank.value if rank else next((minimum for minimum, _ in RANKS if minimum > current), RANKS[-1][0])
             else:
-                level=min(100, max(2, current + 1))
+                level=max(2, rank.value) if rank else min(100, max(2, current + 1))
+        if rank and rank_for_level(level) != rank_for_level(rank.value):
+            await i.response.send_message(f"Level {level} belongs to {rank_for_level(level)}, not {rank.name}.",ephemeral=True)
+            return
         if feature.value == "rank" and rank_for_level(level - 1) == rank_for_level(level):
             await i.response.send_message("Choose a rank boundary: level 10, 20, 30, …, or 90.",ephemeral=True)
             return
+        preview_prestige=prestige if prestige is not None else int(current_progression.get("prestige",0))
 
     # Defer before rendering; GIF generation can exceed Discord's initial response window.
     await i.response.defer(ephemeral=True)
@@ -1947,8 +2011,8 @@ async def simkl_debug(
     else:
         sent=await notify_level_up(
             i.guild.id, str(i.user.id),
-            {"xp": xp_for_level(level - 1) if level > 2 else 0},
-            {"xp": xp_for_level(level)}, i.channel,
+            {"xp": xp_for_level(level - 1) if level > 2 else 0,"prestige":preview_prestige},
+            {"xp": xp_for_level(level),"prestige":preview_prestige}, i.channel,
             preview_interaction=i,
         )
     if not sent:
@@ -1978,7 +2042,9 @@ async def show_profile(i,user):
     try:
         image=await asyncio.to_thread(render_profile_png,target.display_name,data)
         embed.set_image(url="attachment://profile.png")
-        await i.followup.send(embed=embed,file=discord.File(image,filename="profile.png"))
+        await i.followup.send(content=(f"**{target.display_name}'s SIMKL stats** · P{data['prestige']} L{data['level']} "
+                                       f"· {data['xp']:,} XP · {data['total']:,} watches"),
+                              file=discord.File(image,filename="profile.png"))
     except Exception:
         log.exception("Could not send profile image for %s; sending embed fallback.",target.id)
         embed.set_image(url=None)
@@ -1990,12 +2056,6 @@ async def show_profile(i,user):
 @bot.tree.command(name="simkl-stats",description="Show a visual SIMKL profile with watches, XP, and achievements.")
 @app_commands.describe(user="Optional server member to view")
 async def simkl_stats(i,user: discord.Member | None = None):
-    await show_profile(i,user)
-
-
-@bot.tree.command(name="simkl-profile",description="Show a visual SIMKL profile with watches, XP, and achievements.")
-@app_commands.describe(user="Optional server member to view")
-async def simkl_profile(i,user: discord.Member | None = None):
     await show_profile(i,user)
 
 
@@ -2054,7 +2114,7 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
     try:
         image=await asyncio.to_thread(render_leaderboard_png,i.guild.name,labels[category],values[:10])
         embed.set_image(url="attachment://leaderboard.png")
-        await i.followup.send(embed=embed,file=discord.File(image,filename="leaderboard.png"))
+        await i.followup.send(content=f"**{i.guild.name} · {labels[category]}** · Top 10",file=discord.File(image,filename="leaderboard.png"))
     except Exception:
         log.exception("Could not send leaderboard image for guild %s; sending embed fallback.",g)
         embed.set_image(url=None)
