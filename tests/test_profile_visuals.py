@@ -6,7 +6,7 @@ import tempfile
 from PIL import Image
 
 import storage as storage_module
-from level_visuals import prestige_style, render_prestige_gif
+from level_visuals import accent_for_level, prestige_style, render_prestige_gif
 from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png
 from progression import xp_for_level
 
@@ -46,6 +46,8 @@ def test_prestige_emblems_and_accents_vary():
     styles=[prestige_style(n) for n in range(1,13)]
     assert len(set(color for color,_ in styles))==12
     assert len(set(icon for _,icon in styles))==6
+    assert prestige_style(1)[0] != accent_for_level(90)
+    assert min(prestige_style(1)[0]) > min(accent_for_level(1))
     for number in (1,2,3,6):
         gif=Image.open(render_prestige_gif(number))
         assert gif.size==(720,280)

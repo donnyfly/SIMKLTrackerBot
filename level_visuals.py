@@ -28,18 +28,30 @@ _LINE = (42, 47, 61)
 # One accent for each rank, ordered by the progression table. Keep the
 # palette separate from the XP rules so all levels in a rank share a color.
 _RANK_COLORS = (
-    (121, 134, 255),  # Newcomer — indigo
-    (82, 186, 226),   # Casual Watcher — sky
-    (76, 199, 181),   # Regular Viewer — teal
-    (113, 205, 139),  # Binge Watcher — green
-    (179, 211, 105),  # Dedicated Viewer — lime
-    (239, 190, 105),  # Media Enthusiast — amber
-    (242, 153, 105),  # Watch Veteran — coral
-    (232, 127, 162),  # Watch Master — rose
-    (183, 145, 241),  # Watch Legend — violet
-    (195, 225, 241),  # Screen Immortal — platinum
+    (139, 152, 170),  # Newcomer — slate
+    (121, 159, 195),  # Casual Watcher — steel blue
+    (104, 174, 215),  # Regular Viewer — azure
+    (88, 196, 199),   # Binge Watcher — teal
+    (107, 197, 160),  # Dedicated Viewer — jade
+    (115, 167, 232),  # Media Enthusiast — sapphire
+    (154, 140, 232),  # Watch Veteran — amethyst
+    (192, 148, 232),  # Watch Master — violet
+    (229, 182, 116),  # Watch Legend — champagne gold
+    (245, 216, 142),  # Screen Immortal — radiant gold
 )
 _RANK_ACCENTS = {name: color for (_, name), color in zip(RANKS, _RANK_COLORS)}
+
+# Prestiges begin beyond the rank palette: pale, luminous finishes rather
+# than another saturated rainbow. Later cycles vary their hue while retaining
+# the premium finish and the numbered emblem.
+_PRESTIGE_FINISHES = (
+    (226, 233, 244),  # 1 — moon silver
+    (188, 228, 242),  # 2 — opal blue
+    (220, 196, 244),  # 3 — royal amethyst
+    (175, 235, 221),  # 4 — aurora jade
+    (242, 199, 190),  # 5 — rose gold
+    (249, 228, 175),  # 6 — celestial gold
+)
 
 
 def accent_for_level(level: int) -> tuple[int, int, int]:
@@ -48,40 +60,47 @@ def accent_for_level(level: int) -> tuple[int, int, int]:
 
 
 def prestige_style(prestige: int) -> tuple[tuple[int, int, int], int]:
-    """A rotating emblem and a distinct hue for successive prestiges."""
+    """A luminous finish and numbered emblem for each prestige."""
     prestige = max(1, int(prestige))
-    hue = ((prestige - 1) * 0.61803398875 + 0.115) % 1.0
-    rgb = colorsys.hsv_to_rgb(hue, 0.55, 0.95)
-    return tuple(round(channel * 255) for channel in rgb), (prestige - 1) % 6
+    index = (prestige - 1) % len(_PRESTIGE_FINISHES)
+    cycle = (prestige - 1) // len(_PRESTIGE_FINISHES)
+    base = _PRESTIGE_FINISHES[index]
+    if not cycle:
+        return base, index
+    hue, saturation, _ = colorsys.rgb_to_hsv(*(channel / 255 for channel in base))
+    hue = (hue + cycle * 0.61803398875) % 1.0
+    rgb = colorsys.hsv_to_rgb(hue, saturation, 0.97)
+    return tuple(round(channel * 255) for channel in rgb), index
 
 
 def _prestige_emblem(draw: ImageDraw.ImageDraw, cx: int, cy: int, style: int):
     """Six crisp geometric insignias that survive GIF palette conversion."""
+    ink=(25, 30, 43)
     if style == 0:  # crown
-        draw.polygon(((cx - 18, cy - 8), (cx - 10, cy + 4), (cx, cy - 8), (cx + 10, cy + 4), (cx + 18, cy - 8), (cx + 15, cy + 13), (cx - 15, cy + 13)), fill=_TEXT)
-        draw.rectangle((cx - 15, cy + 15, cx + 15, cy + 19), fill=_TEXT)
+        draw.polygon(((cx - 18, cy - 8), (cx - 10, cy + 4), (cx, cy - 8), (cx + 10, cy + 4), (cx + 18, cy - 8), (cx + 15, cy + 13), (cx - 15, cy + 13)), fill=ink)
+        draw.rectangle((cx - 15, cy + 15, cx + 15, cy + 19), fill=ink)
     elif style == 1:  # star
         points=[]
         for i in range(10):
             angle=-math.pi / 2 + i * math.pi / 5
             radius=19 if i % 2 == 0 else 8
             points.append((cx + round(math.cos(angle) * radius), cy + round(math.sin(angle) * radius)))
-        draw.polygon(points, fill=_TEXT)
+        draw.polygon(points, fill=ink)
     elif style == 2:  # diamond
-        draw.polygon(((cx, cy - 19), (cx + 18, cy), (cx, cy + 19), (cx - 18, cy)), fill=_TEXT)
-        draw.line(((cx - 18, cy), (cx + 18, cy)), fill=_PANEL, width=2)
+        draw.polygon(((cx, cy - 19), (cx + 18, cy), (cx, cy + 19), (cx - 18, cy)), fill=ink)
+        draw.line(((cx - 18, cy), (cx + 18, cy)), fill=_TEXT, width=2)
     elif style == 3:  # orbit
-        draw.ellipse((cx - 15, cy - 15, cx + 15, cy + 15), outline=_TEXT, width=4)
-        draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), fill=_TEXT)
-        draw.ellipse((cx + 12, cy - 17, cx + 20, cy - 9), fill=_TEXT)
+        draw.ellipse((cx - 15, cy - 15, cx + 15, cy + 15), outline=ink, width=4)
+        draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), fill=ink)
+        draw.ellipse((cx + 12, cy - 17, cx + 20, cy - 9), fill=ink)
     elif style == 4:  # shield
-        draw.polygon(((cx, cy - 19), (cx + 17, cy - 11), (cx + 13, cy + 10), (cx, cy + 20), (cx - 13, cy + 10), (cx - 17, cy - 11)), fill=_TEXT)
-        draw.line(((cx, cy - 11), (cx, cy + 11)), fill=_PANEL, width=3)
+        draw.polygon(((cx, cy - 19), (cx + 17, cy - 11), (cx + 13, cy + 10), (cx, cy + 20), (cx - 13, cy + 10), (cx - 17, cy - 11)), fill=ink)
+        draw.line(((cx, cy - 11), (cx, cy + 11)), fill=_TEXT, width=3)
     else:  # sun
-        draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=_TEXT)
+        draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=ink)
         for i in range(8):
             angle=i * math.pi / 4
-            draw.line(((cx + round(math.cos(angle) * 15), cy + round(math.sin(angle) * 15)), (cx + round(math.cos(angle) * 21), cy + round(math.sin(angle) * 21))), fill=_TEXT, width=3)
+            draw.line(((cx + round(math.cos(angle) * 15), cy + round(math.sin(angle) * 15)), (cx + round(math.cos(angle) * 21), cy + round(math.sin(angle) * 21))), fill=ink, width=3)
 
 
 def render_prestige_gif(prestige: int) -> BytesIO:
@@ -95,7 +114,10 @@ def render_prestige_gif(prestige: int) -> BytesIO:
         pulse=math.sin(t * math.pi) ** 2
         image=Image.new("RGB", (WIDTH, HEIGHT), _BG)
         draw=ImageDraw.Draw(image)
-        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=_LINE)
+        border=_mix(_LINE,accent,0.35)
+        draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=border,width=2)
+        # A restrained highlight differentiates prestige from regular ranks.
+        draw.line((WIDTH-169,36,WIDTH-74,36),fill=_mix(_PANEL,accent,0.25),width=2)
         draw.rounded_rectangle((48, HEIGHT - 35, 48 + int((WIDTH - 96) * reveal), HEIGHT - 31), radius=2, fill=accent)
         cx,cy=132,137
         for ring in range(3):
@@ -108,7 +130,7 @@ def render_prestige_gif(prestige: int) -> BytesIO:
         tier_label=f"P{prestige}"
         tier_font=_font(11)
         tier_width=draw.textbbox((0,0),tier_label,font=tier_font)[2]
-        draw.text((cx-tier_width/2,cy+17),tier_label,font=tier_font,fill=_TEXT)
+        draw.text((cx-tier_width/2,cy+17),tier_label,font=tier_font,fill=(25,30,43))
         draw.text((230,58),"PRESTIGE UNLOCKED",font=_font(18),fill=accent)
         draw.text((230,82),str(prestige),font=_font(78),fill=_mix(_MUTED,_TEXT,reveal))
         draw.text((234,180),"A NEW CHAPTER",font=_font(26),fill=_TEXT)

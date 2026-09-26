@@ -86,7 +86,7 @@ Progression has 100 levels per prestige, with ranks ranging from **Newcomer** to
 
 The bot also generates three daily and three weekly watch challenges. Completing a challenge grants bonus XP. Challenge progress is based on watch activity detected by the bot and is tracked separately from the server watch statistics.
 
-Use `/simkl-profile` or `/simkl-stats` to see current XP, level, rank, prestige, lifetime XP, and the XP breakdown. `/simkl-leaderboard category: XP / progression` replaces the old XP leaderboard; `/simkl-challenges` and `/simkl-prestige` remain available. Each prestige gets a distinct color and numbered insignia, with six rotating emblem shapes. The prestige command posts the animation after a successful reset.
+Use `/simkl-profile` or `/simkl-stats` to see current XP, level, rank, prestige, lifetime XP, and the XP breakdown. `/simkl-leaderboard category: XP / progression` replaces the old XP leaderboard; `/simkl-challenges` and `/simkl-prestige` remain available. Rank colors progress from slate and cool tones into violet and gold. Prestige uses luminous metallic and jewel finishes above the gold rank, with a distinct color and numbered insignia for each prestige and six rotating emblem shapes. The prestige command posts the animation after a successful reset.
 
 Use `/simkl-debug feature: Level up` to preview the next level, `feature: Rank up` to preview the next rank (or choose a rank boundary with `level`), `feature: Achievement unlocked` with `achievement` to preview any achievement, and `feature: Prestige unlocked` with an optional `prestige` number. Only the admin sees these previews. They use the live notification layout and animated GIF, but do not unlock anything or change XP.
 
