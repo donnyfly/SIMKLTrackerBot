@@ -747,6 +747,90 @@ async def mark_poll_failure(g,uid,error,previous_failures=0):
     failures=max(int(previous_failures or 0),0)+1
     await storage.update_poll_health(g,uid,last_error=error,consecutive_failures=failures,flush=True)
 
+def watch_xp_base_key(media_type, media_key):
+    """Return the stable SIMKL item prefix used by watch-XP event keys."""
+    if media_type in {"episode", "anime_episode"}:
+        return f"{media_type}:{media_key}:"
+    if media_type in {"movie", "anime_movie"}:
+        return f"{media_type}:{media_key}:"
+    return None
+
+
+async def reconcile_watch_progression(uid, u, token, changed_types, request_cache=None):
+    """Reconcile watch XP against the current SIMKL history for changed media types."""
+    if not changed_types:
+        return token, 0
+
+    active_watch_bases=set()
+    media_types=set()
+
+    for t in changed_types:
+        items, token = await cached_simkl_items(
+            uid,
+            u,
+            token,
+            t,
+            request_cache=request_cache,
+            timeout=HISTORY_FETCH_TIMEOUT_SECONDS,
+        )
+
+        if t == "movies":
+            for item in items or []:
+                movie=item.get("movie") or {}
+                sid=(movie.get("ids") or {}).get("simkl")
+                if sid is None or not item.get("last_watched_at"):
+                    continue
+                anime_movie=bool(
+                    movie.get("anime_type") == "movie"
+                    or movie.get("type") == "movie"
+                    or (movie.get("ids") or {}).get("mal")
+                )
+                media_type="anime_movie" if anime_movie else "movie"
+                base=watch_xp_base_key(media_type, f"movies:{sid}")
+                if base:
+                    active_watch_bases.add(base)
+                media_types.add(media_type)
+            continue
+
+        episode_items=items or []
+        movie_items=[]
+        if t == "anime":
+            episode_items,movie_items=await split_anime_items(items)
+
+        for item in movie_items:
+            movie=item.get("movie") or item.get("show") or {}
+            sid=(movie.get("ids") or {}).get("simkl")
+            if sid is None or not item.get("last_watched_at"):
+                continue
+            base=watch_xp_base_key("anime_movie", f"movies:{sid}")
+            if base:
+                active_watch_bases.add(base)
+            media_types.add("anime_movie")
+
+        media_type="anime_episode" if t == "anime" else "episode"
+        media_types.add(media_type)
+        for episode in iter_show_episodes(t, episode_items):
+            if not episode.get("watched_raw"):
+                continue
+            base=watch_xp_base_key(
+                media_type,
+                f"series:{t}:{episode['simkl_id']}:{episode['season_num']}:{episode['episode_number']}",
+            )
+            if base:
+                active_watch_bases.add(base)
+
+    result=await storage.reconcile_watch_xp(uid, active_watch_bases, media_types)
+    removed=int(result.get("amount", 0))
+    if removed:
+        log.info(
+            "Removed %d XP from deleted SIMKL watch history for user %s (%d watch event(s)).",
+            removed,
+            uid,
+            int(result.get("events", 0)),
+        )
+    return token, removed
+
+
 async def seed_progression_history(uid, u, token, request_cache=None):
     """Backfill XP from the user's existing SIMKL watch history exactly once."""
     progression = await storage.get_progression(uid)
@@ -930,6 +1014,11 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
 
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
+    changed_types=set()
+    for t in MEDIA_TYPES:
+        stamp=(activities.get(ACTIVITY_KEYS[t]) or {}).get("all")
+        if stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO)):
+            changed_types.add(t)
     posted=0
     cycle_errors=[]
     for t in MEDIA_TYPES:
@@ -985,6 +1074,26 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             consecutive_failures=0,flush=False
         )
         await storage.flush()
+
+    if not cycle_errors and changed_types:
+        try:
+            token,removed_xp=await reconcile_watch_progression(
+                uid,
+                u,
+                token,
+                changed_types,
+                request_cache,
+            )
+            if removed_xp:
+                await storage.flush()
+        except Exception as exc:
+            cycle_errors.append(f"progression reconciliation: {type(exc).__name__}")
+            log.error(
+                "Could not reconcile deleted SIMKL watch XP for user %s: %s: %s",
+                uid,
+                type(exc).__name__,
+                exc,
+            )
 
     progression_after_poll=await storage.get_progression(uid)
     await notify_level_up(g,uid,progression_before_poll,progression_after_poll,ch)
