@@ -462,7 +462,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
                     watches[k]=wr
                     seeded_stats.append(("anime_movie",m.get("title") or "Untitled",k,wr,m.get("genres") or x.get("genres")))
             for e in iter_show_episodes(t,episode_items):
-                if e["watched_dt"] is None or e["watched_dt"]<=since:
+                if initial_seed or e["watched_dt"] is None or e["watched_dt"]<=since:
                     keys.append(e["key"])
                     if e.get("watched_raw"):
                         watches[e["key"]]=e["watched_raw"]
@@ -992,6 +992,9 @@ async def notify_history_backfill(guild_id_value, uid, xp_earned, progression, c
 async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
+    if await storage.prepare_empty_history_repair(g,uid):
+        gu["history_seeded"]=False
+        log.info("Reimporting empty legacy watch statistics for user %s in guild %s.",uid,g)
     try:
         token=await valid_token(uid,u)
     except SimklAuthError as exc:

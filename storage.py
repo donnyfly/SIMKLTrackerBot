@@ -309,6 +309,7 @@ def _default_guild_user(start_time_iso: str | None = None) -> dict:
     start = start_time_iso or EPOCH_ISO
     return {
         "history_seeded": False,
+        "history_stats_repaired": False,
         "last_checked": {
             "shows": start,
             "movies": start,
@@ -378,6 +379,7 @@ def _normalise_user(user: dict) -> None:
 def _normalise_guild_user(user: dict) -> None:
     defaults = _default_guild_user()
     user.setdefault("history_seeded", defaults["history_seeded"])
+    user.setdefault("history_stats_repaired", False)
     user.setdefault("last_checked", copy.deepcopy(defaults["last_checked"]))
     if not isinstance(user["last_checked"], dict):
         user["last_checked"] = copy.deepcopy(defaults["last_checked"])
@@ -545,6 +547,7 @@ class Storage:
         for uid, old_user in legacy_users:
             guild_user = _default_guild_user()
             guild_user["history_seeded"] = bool(old_user.get("history_seeded", False))
+            guild_user["history_stats_repaired"] = bool(old_user.get("history_stats_repaired", False))
             guild_user["last_checked"] = copy.deepcopy(
                 old_user.get("last_checked") or guild_user["last_checked"]
             )
@@ -843,9 +846,29 @@ class Storage:
             guild_user["activity_state"]["watch_times"].update(watches)
             guild_user["activity_state"]["statuses_seeded"]=True
             guild_user["history_seeded"]=True
+            guild_user["history_stats_repaired"]=True
             self._dirty=True
         await self.flush()
         return amount
+
+    async def prepare_empty_history_repair(self, guild_id: str | int, discord_user_id: str) -> bool:
+        """Reimport older linked accounts whose completed history has no statistics."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user=self._guild_user(guild_id,discord_user_id)
+            if not user or not user["history_seeded"] or user.get("history_stats_repaired"):
+                return False
+            stats=user["statistics"]
+            if (int(stats.get("episodes_watched",0)) or int(stats.get("movies_watched",0))
+                    or stats.get("watch_events")):
+                return False
+            user["history_seeded"]=False
+            user["last_checked"]={media_type:EPOCH_ISO for media_type in ("shows","movies","anime")}
+            # Keep announced events, progression, and the link. The seed uses
+            # stable watch keys, so already awarded XP remains idempotent.
+            self._dirty=True
+        await self.flush()
+        return True
 
     @staticmethod
     def _apply_watch_records_locked(guild_user: dict, global_user: dict,
