@@ -300,7 +300,8 @@ async def episode_media(t,e):
     # SIMKL anime episode titles can be romanized/romaji. Prefer TMDB's
     # English-localized title (get_episode_details requests en-US), with
     # SIMKL's title only as a fallback when TMDB has no English title.
-    return still,episode.get("name") or e.get("episode_title"),imdb_id
+    runtime = episode.get("runtime")
+    return still,episode.get("name") or e.get("episode_title"),imdb_id,runtime
 
 async def prefs(g,u): return await storage.get_embed_preferences(g,u)
 async def get_imdb_rating(media_type, tmdb_id):
@@ -495,10 +496,10 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 log.warning("TMDB anime series title lookup failed for %s.", title, exc_info=True)
         for grp in group_consecutive(es):
             try:
-                image,ep_title,episode_imdb_id=await episode_media(t,grp[0])
+                image,ep_title,episode_imdb_id,episode_runtime=await episode_media(t,grp[0])
             except Exception:
                 log.warning("TMDB episode lookup failed for %s.", title, exc_info=True)
-                image,ep_title,episode_imdb_id=None,grp[0].get("episode_title"),None
+                image,ep_title,episode_imdb_id,episode_runtime=None,grp[0].get("episode_title"),None
             label=format_episode_display(sn,grp[0]["episode_number"],grp[-1]["episode_number"],p.get("episode_code", False)); verb=kind.capitalize()
             rating = await imdb.get_rating(episode_imdb_id) if len(grp) == 1 and p.get("show_imdb", True) else None
             desc=f"{verb} {label}"
@@ -526,7 +527,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
             for watched in grp:
                 await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False)
-                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"])
+                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"], episode_runtime)
             pending.update(watch_times)
             count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -778,6 +779,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         except Exception:
             log.warning("Profile lookup failed for %s.",uid)
     profile=simkl_profile_url(u.get("simkl_account_id"))
+    progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
     posted=0
     cycle_errors=[]
@@ -932,8 +934,19 @@ async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
             qualifies=True
         else:
             qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
-        if qualifies and await storage.unlock_achievement(g,uid,achievement_id,now,flush=False):
-            newly_unlocked.append(achievement_id)
+        if qualifies:
+            unlocked_now = await storage.unlock_achievement(g,uid,achievement_id,now,flush=False)
+            if unlocked_now:
+                newly_unlocked.append(achievement_id)
+            achievement_xp = int(achievement.get("xp", 0))
+            if achievement_xp > 0:
+                await storage.award_achievement_xp(
+                    uid,
+                    achievement_id,
+                    achievement_xp,
+                    achievement["name"],
+                    now,
+                )
 
     if newly_unlocked:
         await storage.flush()
@@ -991,8 +1004,8 @@ def calculate_streaks(watch_dates, timezone_name=DEFAULT_TIMEZONE_NAME):
     return current,longest
 
 
-async def award_watch_progression(uid, event_key, media_type, title, watched_at):
-    result = await storage.award_watch_xp(uid, event_key, media_type, title, watched_at, xp_for_watch(media_type))
+async def award_watch_progression(uid, event_key, media_type, title, watched_at, runtime_minutes=None):
+    result = await storage.award_watch_xp(uid, event_key, media_type, title, watched_at, xp_for_watch(media_type, runtime_minutes))
     if not result.get("awarded"):
         return 0
     state = await storage.get_challenge_state(uid)
@@ -1018,6 +1031,19 @@ async def award_watch_progression(uid, event_key, media_type, title, watched_at)
         if challenge_progress(events, challenge, weekly_start, weekly_end) >= challenge["target"]:
             await storage.complete_challenge(uid, challenge["id"], weekly_key, challenge["xp"])
     return int(result.get("amount", 0))
+
+async def notify_level_up(guild_id_value, uid, before_progression, after_progression, channel):
+    if channel is None:
+        return
+    before_level = level_progress(int(before_progression.get("xp", 0)))[0]
+    after_level = level_progress(int(after_progression.get("xp", 0)))[0]
+    if after_level <= before_level:
+        return
+    guild = bot.get_guild(int(guild_id_value))
+    member = guild.get_member(int(uid)) if guild else None
+    mention = member.mention if member else f"<@{uid}>"
+    rank = rank_for_level(after_level)
+    await channel.send(f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**")
 
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
@@ -1240,21 +1266,18 @@ def progression_embed(uid, progression, title="SIMKL Progression"):
     e.description = f"**Level {level} — {rank}**\n\n{bar}\n**{progress_text}**\n\n**Prestige:** {prestige}\n**Lifetime XP:** {lifetime:,}"
     return e
 
-@bot.tree.command(name="simkl-level", description="View your SIMKL level, rank, and XP.")
-async def simkl_level(i):
-    progression = await storage.get_progression(str(i.user.id))
-    await i.response.send_message(embed=progression_embed(str(i.user.id), progression))
-
-@bot.tree.command(name="simkl-xp", description="View your SIMKL XP breakdown.")
+@bot.tree.command(name="simkl-xp", description="View your SIMKL level, rank, and XP.")
 async def simkl_xp(i):
     progression = await storage.get_progression(str(i.user.id))
     events = progression.get("xp_events", [])
-    watch_xp = sum(int(e.get("amount", 0)) for e in events)
+    watch_xp = sum(int(e.get("amount", 0)) for e in events if e.get("media_type") in {"episode", "anime_episode", "movie", "anime_movie"})
+    achievement_xp = sum(int(e.get("amount", 0)) for e in events if e.get("media_type") == "achievement")
     challenge_xp = sum(int(v.get("xp", 0)) for p in progression.get("challenge_completions", {}).values() for v in p.values())
     e = progression_embed(str(i.user.id), progression, "SIMKL XP")
     e.add_field(name="Watching", value=f"+{watch_xp:,} XP", inline=True)
+    e.add_field(name="Achievements", value=f"+{achievement_xp:,} XP", inline=True)
     e.add_field(name="Challenges", value=f"+{challenge_xp:,} XP", inline=True)
-    e.add_field(name="Recorded XP events", value=f"{len(events):,}", inline=True)
+    e.add_field(name="Recorded XP events", value=f"{len(events):,}", inline=False)
     await i.response.send_message(embed=e)
 
 @bot.tree.command(name="simkl-challenges", description="View your current daily and weekly watch challenges.")
