@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
+from progression import challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -452,6 +453,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
     await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches,flush=False)
     for media_type,title,key,watched_at in seeded_stats:
         await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False)
+        await award_watch_progression(uid, f"{media_type}:{key}:{watched_at}", media_type, title, watched_at)
     await storage.flush()
     await evaluate_achievements(g,uid)
     return token
@@ -524,6 +526,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
             for watched in grp:
                 await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False)
+                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"])
             pending.update(watch_times)
             count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -625,6 +628,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         await storage.add_announced(g,uid,[k])
         await storage.update_activity_state(g,uid,watch_times={k:wr},flush=False)
         await storage.record_watch(g,uid,"anime_movie" if anime_movie else "movie",title,k,wr,flush=False)
+        await award_watch_progression(uid, f"{'anime_movie' if anime_movie else 'movie'}:{k}:{wr}", "anime_movie" if anime_movie else "movie", title, wr)
         pending[k]=wr
         count+=1
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -986,6 +990,35 @@ def calculate_streaks(watch_dates, timezone_name=DEFAULT_TIMEZONE_NAME):
         longest=max(longest,length)
     return current,longest
 
+
+async def award_watch_progression(uid, event_key, media_type, title, watched_at):
+    result = await storage.award_watch_xp(uid, event_key, media_type, title, watched_at, xp_for_watch(media_type))
+    if not result.get("awarded"):
+        return 0
+    state = await storage.get_challenge_state(uid)
+    events = state.get("xp_events", [])
+    now = parse_iso(watched_at)
+    daily, weekly = challenges_for(now.date())
+    daily_key = f"daily:{now.date().isoformat()}"
+    monday = now.date() - timedelta(days=now.date().weekday())
+    weekly_key = f"weekly:{monday.isoformat()}"
+    daily_start = f"{now.date().isoformat()}T00:00:00+00:00"
+    daily_end = f"{now.date().isoformat()}T23:59:59+00:00"
+    weekly_start = f"{monday.isoformat()}T00:00:00+00:00"
+    weekly_end = f"{(monday + timedelta(days=6)).isoformat()}T23:59:59+00:00"
+    completions = state.get("challenge_completions", {})
+    for challenge in daily:
+        if challenge["id"] in completions.get(daily_key, {}):
+            continue
+        if challenge_progress(events, challenge, daily_start, daily_end) >= challenge["target"]:
+            await storage.complete_challenge(uid, challenge["id"], daily_key, challenge["xp"])
+    for challenge in weekly:
+        if challenge["id"] in completions.get(weekly_key, {}):
+            continue
+        if challenge_progress(events, challenge, weekly_start, weekly_end) >= challenge["target"]:
+            await storage.complete_challenge(uid, challenge["id"], weekly_key, challenge["xp"])
+    return int(result.get("amount", 0))
+
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
 
@@ -1188,6 +1221,108 @@ ACHIEVEMENT_CHOICES=[
     for aid,a in all_achievements()
 ]
 
+
+
+def progression_embed(uid, progression, title="SIMKL Progression"):
+    xp = int(progression.get("xp", 0))
+    lifetime = int(progression.get("lifetime_xp", 0))
+    prestige = int(progression.get("prestige", 0))
+    level, within, needed = level_progress(xp)
+    rank = rank_for_level(level)
+    if level >= 100:
+        bar = "████████████████████"
+        progress_text = "MAX LEVEL"
+    else:
+        filled = max(0, min(20, round((within / needed) * 20)))
+        bar = "█" * filled + "░" * (20 - filled)
+        progress_text = f"{within:,} / {needed:,} XP"
+    e = discord.Embed(title=title, color=0x5865F2)
+    e.description = f"**Level {level} — {rank}**\n\n{bar}\n**{progress_text}**\n\n**Prestige:** {prestige}\n**Lifetime XP:** {lifetime:,}"
+    return e
+
+@bot.tree.command(name="simkl-level", description="View your SIMKL level, rank, and XP.")
+async def simkl_level(i):
+    progression = await storage.get_progression(str(i.user.id))
+    await i.response.send_message(embed=progression_embed(str(i.user.id), progression))
+
+@bot.tree.command(name="simkl-xp", description="View your SIMKL XP breakdown.")
+async def simkl_xp(i):
+    progression = await storage.get_progression(str(i.user.id))
+    events = progression.get("xp_events", [])
+    watch_xp = sum(int(e.get("amount", 0)) for e in events)
+    challenge_xp = sum(int(v.get("xp", 0)) for p in progression.get("challenge_completions", {}).values() for v in p.values())
+    e = progression_embed(str(i.user.id), progression, "SIMKL XP")
+    e.add_field(name="Watching", value=f"+{watch_xp:,} XP", inline=True)
+    e.add_field(name="Challenges", value=f"+{challenge_xp:,} XP", inline=True)
+    e.add_field(name="Recorded XP events", value=f"{len(events):,}", inline=True)
+    await i.response.send_message(embed=e)
+
+@bot.tree.command(name="simkl-challenges", description="View your current daily and weekly watch challenges.")
+async def simkl_challenges(i):
+    uid = str(i.user.id)
+    today = datetime.now(timezone.utc).date()
+    daily, weekly = challenges_for(today)
+    state = await storage.get_challenge_state(uid)
+    events = state.get("xp_events", [])
+    completed = state.get("challenge_completions", {})
+    daily_key = f"daily:{today.isoformat()}"
+    monday = today - timedelta(days=today.weekday())
+    weekly_key = f"weekly:{monday.isoformat()}"
+    ds = f"{today.isoformat()}T00:00:00+00:00"
+    de = f"{today.isoformat()}T23:59:59+00:00"
+    ws = f"{monday.isoformat()}T00:00:00+00:00"
+    we = f"{(monday + timedelta(days=6)).isoformat()}T23:59:59+00:00"
+
+    def lines(challenges, key, start, end):
+        out = []
+        for ch in challenges:
+            done = ch["id"] in completed.get(key, {})
+            progress = ch["target"] if done else challenge_progress(events, ch, start, end)
+            mark = "✓" if done else "□"
+            out.append(f'{mark} **{ch["name"]}** — {progress}/{ch["target"]} · +{ch["xp"]:,} XP')
+        return "\n".join(out)
+
+    e = discord.Embed(title="SIMKL Challenges", color=0x5865F2)
+    e.add_field(name="Daily", value=lines(daily, daily_key, ds, de), inline=False)
+    e.add_field(name="Weekly", value=lines(weekly, weekly_key, ws, we), inline=False)
+    e.set_footer(text="Challenges use your recorded watch activity and refresh automatically.")
+    await i.response.send_message(embed=e)
+
+@bot.tree.command(name="simkl-prestige", description="Prestige after reaching Level 100.")
+async def simkl_prestige(i):
+    uid = str(i.user.id)
+    progression = await storage.get_progression(uid)
+    level = level_progress(int(progression.get("xp", 0)))[0]
+    if level < 100:
+        await i.response.send_message(f"You need Level 100 to prestige. You are currently Level {level}.", ephemeral=True)
+        return
+    await storage.prestige_user(uid)
+    updated = await storage.get_progression(uid)
+    e = progression_embed(uid, updated, "Prestige Unlocked")
+    e.description = f'**Prestige {updated.get("prestige", 0)}**\n\nYour level progression has been reset to Level 1. Your lifetime XP remains intact.\n\n{e.description}'
+    await i.response.send_message(embed=e)
+
+@bot.tree.command(name="simkl-xp-leaderboard", description="View the server XP leaderboard.")
+async def simkl_xp_leaderboard(i):
+    if not i.guild:
+        await i.response.send_message("This command must be used in a server.", ephemeral=True)
+        return
+    data = await storage.get_all()
+    guild_users = (data.get("guilds", {}).get(str(i.guild.id), {}).get("users", {}) or {})
+    rows = []
+    for uid in guild_users:
+        p = (data.get("users", {}).get(str(uid), {}) or {}).get("progression", {})
+        xp = int(p.get("xp", 0))
+        prestige = int(p.get("prestige", 0))
+        level = level_progress(xp)[0]
+        rows.append((xp, prestige, level, uid))
+    rows.sort(key=lambda x: (-x[1], -x[0], x[3]))
+    if not rows:
+        await i.response.send_message("No progression data has been recorded yet.")
+        return
+    lines = [f"**{n}.** <@{uid}> — P{prestige} L{level} · {xp:,} XP" for n, (xp, prestige, level, uid) in enumerate(rows[:10], 1)]
+    e = discord.Embed(title=f"{i.guild.name} · XP Leaderboard", description="\n".join(lines), color=0x5865F2)
+    await i.response.send_message(embed=e)
 
 @bot.tree.command(name="simkl-user-reset",description="Reset your SIMKL tracking history for this server.")
 @app_commands.describe(confirm="Confirm that you want to reset your server-local tracking state")
