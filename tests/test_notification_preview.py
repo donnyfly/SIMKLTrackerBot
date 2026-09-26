@@ -18,6 +18,20 @@ import storage as storage_module  # noqa: E402
 from achievements import ACHIEVEMENTS  # noqa: E402
 from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif  # noqa: E402
 from progression import RANKS, rank_for_level  # noqa: E402
+from simkl_client import SimklClient  # noqa: E402
+
+
+def test_full_history_requests_completed_and_dropped_episode_rows(monkeypatch):
+    async def scenario():
+        client=SimklClient("test-client")
+        request=AsyncMock(return_value={"anime":[]})
+        monkeypatch.setattr(client,"_get",request)
+        assert await client.get_all_items("token","anime")==[]
+        params=request.await_args.kwargs["params"]
+        assert params["extended"]=="full_anime_seasons"
+        assert params["episode_watched_at"]=="yes"
+        assert params["include_all_episodes"]=="yes"
+    asyncio.run(scenario())
 
 
 def _interaction():
