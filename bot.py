@@ -287,7 +287,7 @@ async def episode_media(t,e):
             if sid:
                 d=await tmdb.get_episode_details(sid,e.get("season_num"),e["episode_number"])
                 if d: r={"series_id":sid,"season_number":int(e["season_num"]),"episode_number":e["episode_number"],"episode":d}
-    if not r: return None,e.get("episode_title"),None
+    if not r: return None,e.get("episode_title"),None,None
     episode=r.get("episode") or {}
     imdb_id=(episode.get("external_ids") or {}).get("imdb_id")
     still=r.get("still_url")
@@ -517,6 +517,14 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                     logo=await tmdb.get_tv_logo(anime_tmdb_id) if anime_tmdb_id is not None else None
                 except Exception:
                     log.warning("TMDB TV logo lookup failed for %s.", title, exc_info=True)
+            runtime_by_key={grp[0]["key"]: episode_runtime}
+            for extra_episode in grp[1:]:
+                try:
+                    _,_,_,extra_runtime=await episode_media(t,extra_episode)
+                    runtime_by_key[extra_episode["key"]]=extra_runtime
+                except Exception:
+                    runtime_by_key[extra_episode["key"]]=None
+
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image,profile,title,url,fallback,logo,p)
             if not await send_embed(ch,e,"episode"):
                 ok=False
@@ -527,7 +535,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
             await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
             for watched in grp:
                 await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False)
-                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"], episode_runtime)
+                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"], runtime_by_key.get(watched["key"]))
             pending.update(watch_times)
             count+=len(grp)
     if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
@@ -836,6 +844,9 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             consecutive_failures=0,flush=False
         )
         await storage.flush()
+
+    progression_after_poll=await storage.get_progression(uid)
+    await notify_level_up(g,uid,progression_before_poll,progression_after_poll,ch)
     return posted
 
 async def poll_all(g=None):
@@ -926,27 +937,30 @@ async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
     now=datetime.now(timezone.utc).isoformat()
 
     for achievement_id, achievement in all_achievements():
-        if achievement_id in unlocked:
-            continue
+        already_unlocked = achievement_id in unlocked
         if force_id is not None:
             if achievement_id != force_id:
                 continue
             qualifies=True
         else:
             qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
-        if qualifies:
+        if not qualifies:
+            continue
+
+        if not already_unlocked:
             unlocked_now = await storage.unlock_achievement(g,uid,achievement_id,now,flush=False)
             if unlocked_now:
                 newly_unlocked.append(achievement_id)
-            achievement_xp = int(achievement.get("xp", 0))
-            if achievement_xp > 0:
-                await storage.award_achievement_xp(
-                    uid,
-                    achievement_id,
-                    achievement_xp,
-                    achievement["name"],
-                    now,
-                )
+
+        achievement_xp = int(achievement.get("xp", 0))
+        if achievement_xp > 0:
+            await storage.award_achievement_xp(
+                uid,
+                achievement_id,
+                achievement_xp,
+                achievement["name"],
+                now,
+            )
 
     if newly_unlocked:
         await storage.flush()
@@ -964,7 +978,7 @@ async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
         for aid in newly_unlocked:
             embed.add_field(
                 name=ACHIEVEMENTS[aid]["name"],
-                value=ACHIEVEMENTS[aid]["description"],
+                value=f'{ACHIEVEMENTS[aid]["description"]}\n**Reward:** +{int(ACHIEVEMENTS[aid].get("xp", 0)):,} XP',
                 inline=False,
             )
         await notify_channel.send(embed=embed)
@@ -1268,6 +1282,8 @@ def progression_embed(uid, progression, title="SIMKL Progression"):
 
 @bot.tree.command(name="simkl-xp", description="View your SIMKL level, rank, and XP.")
 async def simkl_xp(i):
+    if i.guild:
+        await evaluate_achievements(i.guild.id, str(i.user.id))
     progression = await storage.get_progression(str(i.user.id))
     events = progression.get("xp_events", [])
     watch_xp = sum(int(e.get("amount", 0)) for e in events if e.get("media_type") in {"episode", "anime_episode", "movie", "anime_movie"})
