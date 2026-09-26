@@ -152,6 +152,19 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("simkl_username", "unknown")
     user.setdefault("simkl_account_id", None)
     user.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
+    user.setdefault("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}})
+    if not isinstance(user["progression"], dict):
+        user["progression"] = {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}}
+    progression = user["progression"]
+    progression.setdefault("xp", 0)
+    progression.setdefault("lifetime_xp", 0)
+    progression.setdefault("prestige", 0)
+    progression.setdefault("watch_xp_keys", {})
+    progression.setdefault("xp_events", [])
+    progression.setdefault("challenge_completions", {})
+    if not isinstance(progression["watch_xp_keys"], dict): progression["watch_xp_keys"] = {}
+    if not isinstance(progression["xp_events"], list): progression["xp_events"] = []
+    if not isinstance(progression["challenge_completions"], dict): progression["challenge_completions"] = {}
 
     prefs = user["embed_preferences"]
     if not isinstance(prefs, dict):
@@ -570,7 +583,7 @@ class Storage:
         await self.flush()
         return True
 
-    async def get_activity_state(self, guild_id: str | int, discord_user_id: str) -> dict:
+    async def get_progression(self, discord_user_id: str) -> dict:\n        async with _lock:\n            user = self._user(discord_user_id)\n            return copy.deepcopy(user.get("progression", {})) if user else {}\n\n    async def award_watch_xp(self, discord_user_id: str, event_key: str, media_type: str, title: str, watched_at: str, amount: int) -> dict:\n        """Award watch XP once globally per SIMKL watch event."""\n        async with _lock:\n            user = self._user(discord_user_id)\n            if not user:\n                return {"awarded": False, "amount": 0, "progression": {}}\n            progression = user["progression"]\n            if event_key in progression["watch_xp_keys"]:\n                return {"awarded": False, "amount": 0, "progression": copy.deepcopy(progression)}\n            progression["watch_xp_keys"][event_key] = watched_at\n            xp = max(0, int(amount))\n            progression["xp"] = int(progression.get("xp", 0)) + xp\n            progression["lifetime_xp"] = int(progression.get("lifetime_xp", 0)) + xp\n            progression["xp_events"].append({"at": watched_at, "amount": xp, "media_type": media_type, "title": title or "Untitled", "event_key": event_key})\n            progression["xp_events"] = [event for event in progression["xp_events"] if str(event.get("at") or "") >= "2025-01-01T00:00:00Z"]\n            progression["watch_xp_keys"] = {key: stamp for key, stamp in progression["watch_xp_keys"].items() if str(stamp or "") >= "2025-01-01T00:00:00Z"}\n            self._dirty = True\n            result = copy.deepcopy(progression)\n        await self.flush()\n        return {"awarded": True, "amount": xp, "progression": result}\n\n    async def complete_challenge(self, discord_user_id: str, challenge_id: str, period_key: str, amount: int) -> bool:\n        async with _lock:\n            user = self._user(discord_user_id)\n            if not user:\n                return False\n            completed = user["progression"]["challenge_completions"].setdefault(period_key, {})\n            if challenge_id in completed:\n                return False\n            completed[challenge_id] = {"completed_at": datetime.now(timezone.utc).isoformat(), "xp": int(amount)}\n            progression = user["progression"]\n            xp = max(0, int(amount))\n            progression["xp"] = int(progression.get("xp", 0)) + xp\n            progression["lifetime_xp"] = int(progression.get("lifetime_xp", 0)) + xp\n            self._dirty = True\n        await self.flush()\n        return True\n\n    async def get_challenge_state(self, discord_user_id: str) -> dict:\n        async with _lock:\n            user = self._user(discord_user_id)\n            if not user:\n                return {}\n            return {"xp_events": copy.deepcopy(user["progression"].get("xp_events", [])), "challenge_completions": copy.deepcopy(user["progression"].get("challenge_completions", {}))}\n\n    async def prestige_user(self, discord_user_id: str) -> bool:\n        async with _lock:\n            user = self._user(discord_user_id)\n            if not user:\n                return False\n            user["progression"]["xp"] = 0\n            user["progression"]["prestige"] = int(user["progression"].get("prestige", 0)) + 1\n            self._dirty = True\n        await self.flush()\n        return True\n\n    async def get_activity_state(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
             user = self._guild_user(guild_id, discord_user_id)
