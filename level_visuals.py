@@ -14,8 +14,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 WIDTH = 720
 HEIGHT = 280
-FRAMES = 18
-DURATION_MS = 55
+FRAMES = 32
+DURATION_MS = 70
 
 _BG = (12, 14, 20)
 _PANEL = (18, 21, 30)
@@ -67,7 +67,7 @@ def render_level_up_gif(
 
     for index in range(FRAMES):
         t = index / max(FRAMES - 1, 1)
-        reveal = _ease_out_cubic(min(1.0, t / 0.58))
+        reveal = _ease_out_cubic(min(1.0, t / 0.72))
         pulse = (math.sin(t * math.pi) ** 2)
 
         image = Image.new("RGB", (WIDTH, HEIGHT), _BG)
@@ -75,8 +75,10 @@ def render_level_up_gif(
 
         # Quiet panel with a thin animated signal line.
         draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=_LINE, width=1)
+        # Give the signal sweep its own footer lane so it never crosses labels.
+        line_y = HEIGHT - 35
         line_end = 48 + int((WIDTH - 96) * reveal)
-        draw.rounded_rectangle((48, HEIGHT - 49, line_end, HEIGHT - 45), radius=2, fill=_ACCENT)
+        draw.rounded_rectangle((48, line_y, line_end, line_y + 4), radius=2, fill=_ACCENT)
 
         # Minimal concentric pulse around the level marker.
         cx, cy = 132, 137
@@ -103,9 +105,9 @@ def render_level_up_gif(
         rank_y = 180
         draw.text((x + 4, rank_y), rank, font=rank_font, fill=_TEXT)
         if rank_up:
-            draw.text((x + 4, rank_y + 38), "NEW RANK", font=small_font, fill=_ACCENT)
+            draw.text((x + 4, rank_y + 32), "NEW RANK", font=small_font, fill=_ACCENT)
         else:
-            draw.text((x + 4, rank_y + 38), "SIMKL TRACKER", font=small_font, fill=_MUTED)
+            draw.text((x + 4, rank_y + 32), "SIMKL TRACKER", font=small_font, fill=_MUTED)
 
         frames.append(image)
 
