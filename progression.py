@@ -48,8 +48,27 @@ def rank_for_level(level: int) -> str:
             break
     return current
 
-def xp_for_watch(media_type: str) -> int:
-    return 300 if media_type in {"movie", "anime_movie"} else 100
+def xp_for_watch(media_type: str, runtime_minutes: int | float | None = None) -> int:
+    """Return XP for one watch event, with longer episodes worth more."""
+    if media_type in {"movie", "anime_movie"}:
+        return 300
+    try:
+        runtime = float(runtime_minutes) if runtime_minutes is not None else 0
+    except (TypeError, ValueError):
+        runtime = 0
+    if runtime >= 180:
+        return 250
+    if runtime >= 150:
+        return 225
+    if runtime >= 120:
+        return 200
+    if runtime >= 90:
+        return 175
+    if runtime >= 60:
+        return 150
+    if runtime >= 40:
+        return 125
+    return 100
 
 def challenge_pool(period: str, day_number: int) -> list[dict]:
     if period == "daily":
