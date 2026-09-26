@@ -440,7 +440,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
                 if sid is not None and x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
             for x in movie_items or []:
                 m=x.get("movie") or x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl"); wr=x.get("last_watched_at")
-                if sid is None or (wr and parse_iso(wr)>since): continue
+                if sid is None or (not initial_seed and wr and parse_iso(wr)>since): continue
                 k=movie_key("movies",sid); keys.append(k)
                 if x.get("status"): statuses[f"movies:{sid}"]=x["status"]
                 if wr:
