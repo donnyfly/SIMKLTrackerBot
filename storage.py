@@ -9,9 +9,10 @@ import asyncio
 import copy
 import json
 import os
+from collections import defaultdict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from progression import level_from_xp
+from progression import challenges_for, level_from_xp
 from community import episode_contributions, split_pool
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
@@ -178,6 +179,122 @@ def _rebuild_watch_statistics(events: dict, timezone_name: str | None) -> dict:
         if event.get("genres"):
             title["genres"]=event["genres"]
     return stats
+
+
+def _record_watch_stats(stats: dict, media_type: str, title: str, item_key: str,
+                        watched_at: str, genres, timezone_name: str | None) -> bool:
+    event={"media_type":media_type,"title":title or "Untitled","item_key":item_key,"watched_at":watched_at}
+    names=_genre_names(genres)
+    if names:
+        event["genres"]=names
+    if isinstance(stats.get("watch_events"),dict):
+        event_id=_watch_event_id(event)
+        if event_id in stats["watch_events"]:
+            return False
+        stats["watch_events"][event_id]=event
+    category=("anime_episodes" if media_type=="anime_episode" else
+              "anime_movies" if media_type=="anime_movie" else
+              "movies" if media_type=="movie" else "episodes")
+    stats["episodes_watched" if "episode" in media_type else "movies_watched"]+=1
+    if media_type.startswith("anime_"):
+        stats["anime_episodes_watched" if media_type=="anime_episode" else "anime_movies_watched"]+=1
+    if watched_at:
+        try:
+            watched=datetime.fromisoformat(watched_at.replace("Z","+00:00"))
+            if watched.tzinfo is None:
+                watched=watched.replace(tzinfo=timezone.utc)
+            day=watched.astimezone(_resolve_timezone(timezone_name)).date().isoformat()
+        except (TypeError,ValueError):
+            day=watched_at[:10]
+        if day:
+            daily=stats["watch_dates"].setdefault(day,{})
+            daily[category]=int(daily.get(category,0))+1
+            daily["total"]=int(daily.get("total",0))+1
+    record=stats["titles"].setdefault(item_key,{
+        "title":title or "Untitled","type":media_type,"count":0,"last_watched":None,
+    })
+    record["title"]=title or record.get("title") or "Untitled"
+    record["type"]=media_type
+    record["count"]=int(record.get("count",0))+1
+    record["last_watched"]=watched_at
+    if names:
+        record["genres"]=names
+    return True
+
+
+def _add_watch_xp_events(progression: dict, events: list[dict]) -> tuple[int,list[dict]]:
+    """Apply one imported history batch without copying or pruning per watch."""
+    known=progression["watch_xp_keys"]
+    added=[]
+    amount=0
+    for event in events:
+        key=event["event_key"]
+        if key in known:
+            continue
+        stamp=event["at"]
+        xp=max(0,int(event["amount"]))
+        known[key]=stamp
+        added.append({"at":stamp,"amount":xp,"media_type":event["media_type"],
+                      "title":event.get("title") or "Untitled","event_key":key})
+        amount+=xp
+    if added:
+        progression["xp"]+=amount
+        progression["lifetime_xp"]+=amount
+        progression["xp_events"].extend(added)
+    return amount,added
+
+
+def _complete_watch_challenges(progression: dict, added: list[dict]) -> None:
+    """Count each touched day/week once instead of scanning history per watch."""
+    watch_types={"episode","anime_episode","movie","anime_movie"}
+    touched=set()
+    for event in added:
+        if event["media_type"] in watch_types and event["at"] >= "2025-01-01T00:00:00Z":
+            touched.add(event["at"][:10])
+    if not touched:
+        return
+    from datetime import date, timedelta
+    daily=defaultdict(lambda: {"episodes":0,"movies":0,"watches":0})
+    weekly=defaultdict(lambda: {"episodes":0,"movies":0,"watches":0})
+    touched_weeks=set()
+    for day in touched:
+        parsed=date.fromisoformat(day)
+        touched_weeks.add((parsed-timedelta(days=parsed.weekday())).isoformat())
+    for event in progression["xp_events"]:
+        media_type=event.get("media_type")
+        if media_type not in watch_types:
+            continue
+        day=str(event.get("at") or "")[:10]
+        try:
+            parsed=date.fromisoformat(day)
+        except ValueError:
+            continue
+        week=(parsed-timedelta(days=parsed.weekday())).isoformat()
+        if day not in touched and week not in touched_weeks:
+            continue
+        kind="episodes" if "episode" in media_type else "movies"
+        if day in touched:
+            daily[day][kind]+=1
+            daily[day]["watches"]+=1
+        if week in touched_weeks:
+            weekly[week][kind]+=1
+            weekly[week]["watches"]+=1
+    now=datetime.now(timezone.utc).isoformat()
+    completions=progression["challenge_completions"]
+    for day in touched:
+        for challenge in challenges_for(date.fromisoformat(day))[0]:
+            key=f"daily:{day}"
+            if daily[day][challenge["kind"]]>=challenge["target"] and challenge["id"] not in completions.get(key,{}):
+                completions.setdefault(key,{})[challenge["id"]]={"completed_at":now,"xp":challenge["xp"]}
+                progression["xp"]+=challenge["xp"]
+                progression["lifetime_xp"]+=challenge["xp"]
+    for week in touched_weeks:
+        for challenge in challenges_for(date.fromisoformat(week))[1]:
+            key=f"weekly:{week}"
+            if weekly[week][challenge["kind"]]>=challenge["target"] and challenge["id"] not in completions.get(key,{}):
+                completions.setdefault(key,{})[challenge["id"]]={"completed_at":now,"xp":challenge["xp"]}
+                progression["xp"]+=challenge["xp"]
+                progression["lifetime_xp"]+=challenge["xp"]
 
 
 def _default_activity_state() -> dict:
@@ -664,14 +781,18 @@ class Storage:
             user = self._user(discord_user_id)
             return copy.deepcopy(user.get("progression", {})) if user else {}
 
-    async def mark_history_xp_seeded(self, discord_user_id: str) -> None:
+    async def seed_progression_batch(self, discord_user_id: str, events: list[dict]) -> int:
+        """Backfill global XP and its completion marker in one durable write."""
         async with _lock:
-            user = self._user(discord_user_id)
-            if not user:
-                return
-            user["progression"]["history_xp_seeded"] = True
-            self._dirty = True
+            user=self._user(discord_user_id)
+            if not user or user["progression"].get("history_xp_seeded"):
+                return 0
+            progression=user["progression"]
+            amount,_=_add_watch_xp_events(progression,events)
+            progression["history_xp_seeded"]=True
+            self._dirty=True
         await self.flush()
+        return amount
 
     async def mark_history_xp_notification_sent(self, discord_user_id: str) -> None:
         async with _lock:
@@ -691,17 +812,78 @@ class Storage:
             progression = user["progression"]
             if event_key in progression["watch_xp_keys"]:
                 return {"awarded": False, "amount": 0, "progression": copy.deepcopy(progression)}
-            progression["watch_xp_keys"][event_key] = watched_at
             xp = max(0, int(amount))
-            progression["xp"] = int(progression.get("xp", 0)) + xp
-            progression["lifetime_xp"] = int(progression.get("lifetime_xp", 0)) + xp
-            progression["xp_events"].append({"at": watched_at, "amount": xp, "media_type": media_type, "title": title or "Untitled", "event_key": event_key})
-            progression["xp_events"] = [event for event in progression["xp_events"] if str(event.get("at") or "") >= "2025-01-01T00:00:00Z"]
-            progression["watch_xp_keys"] = {key: stamp for key, stamp in progression["watch_xp_keys"].items() if str(stamp or "") >= "2025-01-01T00:00:00Z"}
+            _add_watch_xp_events(progression,[{"event_key":event_key,"media_type":media_type,
+                                                "title":title,"at":watched_at,"amount":xp}])
             self._dirty = True
             result = copy.deepcopy(progression)
         await self.flush()
         return {"awarded": True, "amount": xp, "progression": result}
+
+    async def seed_guild_history(self, guild_id: str | int, discord_user_id: str,
+                                 keys: list[str], statuses: dict, watches: dict,
+                                 records: list[tuple]) -> int:
+        """Persist a guild's history, global watch XP, and earned challenges atomically."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild_user=self._guild_user(guild_id,discord_user_id)
+            global_user=self._user(discord_user_id)
+            if not guild_user or not global_user or guild_user["history_seeded"]:
+                return 0
+            guild=self._guild(guild_id)
+            watches_to_record=[{
+                "media_type":media_type,"title":title,"item_key":item_key,
+                "watched_at":watched_at,"genres":genres,
+                "amount":300 if media_type in {"movie","anime_movie"} else 100,
+            } for media_type,title,item_key,watched_at,genres in records]
+            amount=self._apply_watch_records_locked(guild_user,global_user,watches_to_record,
+                                                     guild.get("timezone"))
+            guild_user["announced"].update(keys)
+            guild_user["activity_state"]["statuses"].update(statuses)
+            guild_user["activity_state"]["watch_times"].update(watches)
+            guild_user["activity_state"]["statuses_seeded"]=True
+            guild_user["history_seeded"]=True
+            self._dirty=True
+        await self.flush()
+        return amount
+
+    @staticmethod
+    def _apply_watch_records_locked(guild_user: dict, global_user: dict,
+                                     records: list[dict], timezone_name: str | None) -> int:
+        xp_events=[]
+        for record in records:
+            media_type=record["media_type"]
+            title=record["title"]
+            item_key=record["item_key"]
+            watched_at=record["watched_at"]
+            _record_watch_stats(guild_user["statistics"],media_type,title,item_key,watched_at,
+                                record.get("genres"),timezone_name)
+            xp_events.append({"event_key":f"{media_type}:{item_key}:{watched_at}",
+                              "media_type":media_type,"title":title,"at":watched_at,
+                              "amount":record["amount"]})
+        progression=global_user["progression"]
+        amount,added=_add_watch_xp_events(progression,xp_events)
+        _complete_watch_challenges(progression,added)
+        return amount
+
+    async def record_activity_batch(self, guild_id: str | int, discord_user_id: str,
+                                    keys: list[str], watch_times: dict,
+                                    records: list[dict]) -> int:
+        """Record a posted activity group with one update and one disk write."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild_user=self._guild_user(guild_id,discord_user_id)
+            global_user=self._user(discord_user_id)
+            if not guild_user or not global_user:
+                return 0
+            guild=self._guild(guild_id)
+            amount=self._apply_watch_records_locked(guild_user,global_user,records,
+                                                     guild.get("timezone"))
+            guild_user["announced"].update(keys)
+            guild_user["activity_state"]["watch_times"].update(watch_times)
+            self._dirty=True
+        await self.flush()
+        return amount
 
     async def reconcile_watch_xp(self, discord_user_id: str, active_watch_bases: set[str], media_types: set[str]) -> dict:
         """Remove watch XP for media items that no longer exist in SIMKL watch history.
@@ -769,23 +951,6 @@ class Storage:
             "events": len(removed_keys),
             "progression": result,
         }
-
-    async def complete_challenge(self, discord_user_id: str, challenge_id: str, period_key: str, amount: int) -> bool:
-        async with _lock:
-            user = self._user(discord_user_id)
-            if not user:
-                return False
-            completed = user["progression"]["challenge_completions"].setdefault(period_key, {})
-            if challenge_id in completed:
-                return False
-            completed[challenge_id] = {"completed_at": datetime.now(timezone.utc).isoformat(), "xp": int(amount)}
-            progression = user["progression"]
-            xp = max(0, int(amount))
-            progression["xp"] = int(progression.get("xp", 0)) + xp
-            progression["lifetime_xp"] = int(progression.get("lifetime_xp", 0)) + xp
-            self._dirty = True
-        await self.flush()
-        return True
 
     async def get_challenge_state(self, discord_user_id: str) -> dict:
         async with _lock:
@@ -1029,65 +1194,10 @@ class Storage:
             user = self._guild_user(guild_id, discord_user_id)
             if not user:
                 return
-            stats = user["statistics"]
-            event={"media_type":media_type,"title":title or "Untitled","item_key":item_key,"watched_at":watched_at}
-            if genres:
-                event["genres"]=_genre_names(genres)
-            if isinstance(stats.get("watch_events"),dict):
-                event_id=_watch_event_id(event)
-                if event_id in stats["watch_events"]:
-                    return
-                stats["watch_events"][event_id]=event
-            if media_type == "anime_episode":
-                stats["episodes_watched"] += 1
-                stats["anime_episodes_watched"] += 1
-                category = "anime_episodes"
-            elif media_type == "anime_movie":
-                stats["movies_watched"] += 1
-                stats["anime_movies_watched"] += 1
-                category = "anime_movies"
-            elif media_type == "movie":
-                stats["movies_watched"] += 1
-                category = "movies"
-            else:
-                stats["episodes_watched"] += 1
-                category = "episodes"
-
-            day = None
-            if watched_at:
-                try:
-                    watched_dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
-                    if watched_dt.tzinfo is None:
-                        watched_dt = watched_dt.replace(tzinfo=timezone.utc)
-                    guild = self._guild(guild_id, create=True)
-                    timezone_name = guild.get("timezone")
-                    day = watched_dt.astimezone(_resolve_timezone(timezone_name)).date().isoformat()
-                except (TypeError, ValueError):
-                    day = watched_at[:10]
-            if day:
-                daily = stats["watch_dates"].setdefault(day, {})
-                daily[category] = int(daily.get(category, 0)) + 1
-                daily["total"] = int(daily.get("total", 0)) + 1
-
-            title_record = stats["titles"].setdefault(
-                item_key,
-                {"title": title or "Untitled", "type": media_type, "count": 0, "last_watched": None},
-            )
-            title_record["title"] = title or title_record.get("title") or "Untitled"
-            title_record["type"] = media_type
-            title_record["count"] = int(title_record.get("count", 0)) + 1
-            title_record["last_watched"] = watched_at
-            if genres:
-                names=[]
-                if isinstance(genres, (str, dict)):
-                    genres=[genres]
-                for value in genres:
-                    name=value.get("name") if isinstance(value, dict) else value
-                    if isinstance(name, str) and name.strip():
-                        names.append(name.strip().title())
-                if names:
-                    title_record["genres"] = sorted(set(names))
-            self._dirty = True
+            guild=self._guild(guild_id)
+            if _record_watch_stats(user["statistics"],media_type,title,item_key,watched_at,genres,
+                                   guild.get("timezone") if guild else None):
+                self._dirty=True
         if flush:
             await self.flush()
 
@@ -1134,17 +1244,6 @@ class Storage:
         if flush:
             await self.flush()
 
-    async def add_announced(self, guild_id: str | int, discord_user_id: str, keys: list[str]) -> None:
-        if not keys:
-            return
-        async with _lock:
-            self._migrate_legacy_guild_locked(str(guild_id))
-            user = self._guild_user(guild_id, discord_user_id)
-            if not user:
-                return
-            user["announced"].update(keys)
-            self._dirty = True
-
     async def is_announced(self, guild_id: str | int, discord_user_id: str, key: str) -> bool:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
@@ -1156,18 +1255,6 @@ class Storage:
             self._migrate_legacy_guild_locked(str(guild_id))
             user = self._guild_user(guild_id, discord_user_id)
             return set(user["announced"]) if user else set()
-
-    async def mark_history_seeded(self, guild_id: str | int, discord_user_id: str, keys: list[str]) -> bool:
-        async with _lock:
-            self._migrate_legacy_guild_locked(str(guild_id))
-            user = self._guild_user(guild_id, discord_user_id)
-            if not user:
-                return False
-            user["announced"].update(keys)
-            user["history_seeded"] = True
-            self._dirty = True
-        await self.flush()
-        return True
 
     async def link_user(self, guild_id: str | int, discord_user_id: str, access_token: str, refresh_token: str | None, simkl_username: str, start_time_iso: str, token_expires_at: str | None = None, simkl_account_id: int | str | None = None) -> None:
         async with _lock:

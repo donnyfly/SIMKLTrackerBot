@@ -49,7 +49,6 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | Command | Permission | What it does |
 | --- | --- | --- |
 | `/simkl-stats` | Everyone | Render a fresh profile card with watch, XP, streak, and achievement statistics |
-| `/simkl-streak` | Everyone | View your current and longest watch streak |
 | `/simkl-leaderboard` | Everyone | View a visual server leaderboard for watches, XP, level, or prestige |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
@@ -100,11 +99,12 @@ The bot keeps per-server watch statistics locally in `data/store.json`. Statisti
 Available commands:
 
 - `/simkl-stats` — Render a fresh profile PNG on each request. It includes level, rank, current and lifetime XP, XP breakdown, prestige, episode and movie counts, anime counts, streaks, achievements, recent and top titles, active days, last 30 days, and top genres when genre metadata is available. You can optionally select another member.
-- `/simkl-streak` — View current and longest watch streaks.
 - `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, anime, XP progression, level, or prestige. Each row shows prestige, level, current XP, and total watches.
 
 Profiles and leaderboards render from the latest locally recorded polling data; opening them does not make a new SIMKL API request. Historical title records lack genre metadata, so top genres appear as "No genre data yet" until SIMKL supplies genre tags for subsequently recorded watches.
 The profile and leaderboard images are displayed inside Discord embeds. Their inline size depends on the Discord client and the viewer's window width; open the image to see its full resolution. Watch totals are reconciled against current SIMKL history when activity changes, on `/simkl-checknow`, and at least daily during polling. Existing aggregate-only statistics are rebuilt from current SIMKL history once; earlier rewatches that SIMKL no longer lists individually cannot be recovered from that snapshot.
+
+`/simkl-stats` includes current and longest streaks, so the separate `/simkl-streak` command has been removed.
 
 ### Embed customization
 
@@ -234,6 +234,7 @@ TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
 POLL_INTERVAL_MINUTES=60
 POLL_CONCURRENCY=5
+HISTORY_BACKFILL_CONCURRENCY=2
 ```
 
 The default polling interval is **60 minutes**, matching SIMKL's recommended polling interval.
@@ -488,6 +489,7 @@ TMDB_API_KEY=your_tmdb_api_key_here
 MDBLIST_API_KEY=your_mdblist_api_key_here
 POLL_INTERVAL_MINUTES=60
 POLL_CONCURRENCY=5
+HISTORY_BACKFILL_CONCURRENCY=2
 ```
 
 ## Required settings
@@ -563,6 +565,10 @@ POLL_CONCURRENCY=5
 ```
 
 The default value is suitable for most installations.
+
+### `HISTORY_BACKFILL_CONCURRENCY`
+
+Limits the number of first-time history imports running together. The default is `2`; set it to `1` on a CPU-constrained host. Normal polling still uses `POLL_CONCURRENCY`. Importing a large library now records watch totals, XP, and completed challenges in a batch, with one storage write per user instead of one per episode.
 
 ---
 

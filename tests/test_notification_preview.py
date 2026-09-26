@@ -158,6 +158,47 @@ def test_simkl_reconciliation_updates_existing_stats_and_xp(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_anime_classification_is_reused_within_one_poll(monkeypatch):
+    async def scenario():
+        classify=AsyncMock(return_value=([{"show":{"title":"Series"}}],[]))
+        monkeypatch.setattr(bot,"split_anime_items",classify)
+        items=[{"show":{"title":"Series"}}]
+        cache={}
+        first=await bot.cached_split_anime_items("42",items,cache)
+        second=await bot.cached_split_anime_items("42",items,cache)
+        assert first is second
+        classify.assert_awaited_once_with(items)
+    asyncio.run(scenario())
+
+
+def test_episode_range_records_stats_xp_and_challenges_as_one_group(monkeypatch):
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            monkeypatch.setattr(storage_module,"DATA_PATH",f"{directory}/store.json")
+            store=storage_module.Storage()
+            monkeypatch.setattr(bot,"storage",store)
+            await store.link_user("123","42","token",None,"tester","2026-09-20T00:00:00Z")
+            monkeypatch.setattr(bot,"prefs",AsyncMock(return_value={
+                "episode_code":False,"show_imdb":False,"activity_text":"short","artwork":"poster",
+            }))
+            monkeypatch.setattr(bot,"episode_media",AsyncMock(return_value=(None,None,None,45)))
+            monkeypatch.setattr(bot,"build_embed",lambda *args,**kwargs:object())
+            monkeypatch.setattr(bot,"send_embed",AsyncMock(return_value=True))
+            monkeypatch.setattr(bot,"evaluate_achievements",AsyncMock(return_value=[]))
+            item={"show":{"title":"Show","ids":{"simkl":1}},"seasons":[{
+                "number":1,"episodes":[{"number":n,"watched_at":"2026-09-26T10:00:00Z"}
+                                        for n in range(1,6)],
+            }]}
+            count,ok=await bot.process_shows(SimpleNamespace(),123,"42","Tester",SimpleNamespace(),
+                                              "shows",[item],None)
+            assert (count,ok)==(5,True)
+            assert (await store.get_statistics("123","42"))["episodes_watched"]==5
+            progression=await store.get_progression("42")
+            assert sum(event["amount"] for event in progression["xp_events"])==550
+            assert progression["challenge_completions"]
+    asyncio.run(scenario())
+
+
 def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
     async def scenario():
         rows=[
@@ -184,5 +225,6 @@ def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
         assert bot.bot.tree.get_command("simkl-xp-leaderboard") is None
         assert bot.bot.tree.get_command("simkl-xp") is None
         assert bot.bot.tree.get_command("simkl-profile") is None
+        assert bot.bot.tree.get_command("simkl-streak") is None
         assert bot.bot.tree.get_command("simkl-community") is not None
     asyncio.run(scenario())

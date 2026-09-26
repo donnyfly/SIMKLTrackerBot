@@ -41,6 +41,8 @@ except ZoneInfoNotFoundError:
     log_placeholder = True
     DEFAULT_TIMEZONE_NAME = "UTC"
 POLL_CONCURRENCY=positive_int_env("POLL_CONCURRENCY", 5)
+HISTORY_BACKFILL_CONCURRENCY=positive_int_env("HISTORY_BACKFILL_CONCURRENCY", 2)
+history_backfill_semaphore=asyncio.Semaphore(HISTORY_BACKFILL_CONCURRENCY)
 if not DISCORD_BOT_TOKEN or not SIMKL_CLIENT_ID:
     raise SystemExit("Missing DISCORD_BOT_TOKEN or SIMKL_CLIENT_ID.")
 if not TMDB_API_KEY:
@@ -234,6 +236,15 @@ async def split_anime_items(items):
             shows.append(item)
     return shows,movies
 
+
+async def cached_split_anime_items(uid, items, request_cache=None):
+    if request_cache is None:
+        return await split_anime_items(items)
+    key=("anime-classification",uid,id(items))
+    if key not in request_cache:
+        request_cache[key]=await split_anime_items(items)
+    return request_cache[key]
+
 def iter_show_episodes(t,items):
     for item in items or []:
         show=item.get("show") or {}; ids=show.get("ids") or {}; sid=ids.get("simkl")
@@ -420,6 +431,7 @@ async def cached_simkl_activities(uid,u,token,request_cache):
     return result
 
 async def seed_history(g,uid,u,token,request_cache=None):
+    started=time.monotonic()
     last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}; seeded_stats=[]
     for t in MEDIA_TYPES:
         since=parse_iso(last.get(t,EPOCH_ISO)); initial_seed=last.get(t,EPOCH_ISO) == EPOCH_ISO
@@ -437,7 +449,7 @@ async def seed_history(g,uid,u,token,request_cache=None):
             episode_items=items
             movie_items=[]
             if t=="anime":
-                episode_items,movie_items=await split_anime_items(items)
+                episode_items,movie_items=await cached_split_anime_items(uid,items,request_cache)
             for x in episode_items or []:
                 m=x.get("show") or {}; sid=(m.get("ids") or {}).get("simkl")
                 if sid is not None and x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
@@ -455,11 +467,9 @@ async def seed_history(g,uid,u,token,request_cache=None):
                     if e.get("watched_raw"):
                         watches[e["key"]]=e["watched_raw"]
                         seeded_stats.append(("anime_episode" if t == "anime" else "episode",e.get("show_title") or "Untitled",f"series:{t}:{e['simkl_id']}:{e['season_num']}:{e['episode_number']}",e["watched_raw"],e.get("genres")))
-    await storage.mark_history_seeded(g,uid,keys); await storage.update_activity_state(g,uid,statuses=statuses,watch_times=watches,flush=False)
-    for media_type,title,key,watched_at,genres in seeded_stats:
-        await storage.record_watch(g,uid,media_type,title,key,watched_at,flush=False,genres=genres)
-        await award_watch_progression(uid, f"{media_type}:{key}:{watched_at}", media_type, title, watched_at)
-    await storage.flush()
+    awarded=await storage.seed_guild_history(g,uid,keys,statuses,watches,seeded_stats)
+    log.info("Seeded %d historical watches for user %s in guild %s (+%d watch XP) in %.2fs.",
+             len(seeded_stats),uid,g,awarded,time.monotonic()-started)
     await evaluate_achievements(g,uid)
     return token
 
@@ -479,7 +489,7 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
         prev=watches.get(e["key"]); prevdt=parse_iso(prev) if prev else None
         rw=e["key"] in announced and prevdt and e["watched_dt"]>prevdt
         if e["key"] not in announced or rw: groups[(e["simkl_id"],e["season_num"],"rewatched" if rw else "watched")].append(e)
-    count=0; ok=True; pending={}
+    count=0; ok=True
     for (sid,sn,kind),es in groups.items():
         es=sorted(es,key=lambda x:x["episode_number"]); title=es[0]["show_title"]; url=simkl_title_url(t,sid,es[0]["slug"]); fallback=simkl_poster_url(es[0]["poster"])
         if t=="anime":
@@ -542,19 +552,22 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                 continue
             keys=[x["key"] for x in grp]
             watch_times={x["key"]:x["watched_raw"] for x in grp}
-            await storage.add_announced(g,uid,keys)
-            await storage.update_activity_state(g,uid,watch_times=watch_times,flush=False)
-            for watched in grp:
-                await storage.record_watch(g,uid,"anime_episode" if t == "anime" else "episode",title,f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",watched["watched_raw"],flush=False,genres=watched.get("genres"))
-                await award_watch_progression(uid, f"{'anime_episode' if t == 'anime' else 'episode'}:series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}:{watched['watched_raw']}", "anime_episode" if t == "anime" else "episode", title, watched["watched_raw"], runtime_by_key.get(watched["key"]))
-            pending.update(watch_times)
+            records=[{
+                "media_type":"anime_episode" if t=="anime" else "episode",
+                "title":title,
+                "item_key":f"series:{t}:{sid}:{watched['season_num']}:{watched['episode_number']}",
+                "watched_at":watched["watched_raw"],
+                "genres":watched.get("genres"),
+                "amount":xp_for_watch("anime_episode" if t=="anime" else "episode",
+                                       runtime_by_key.get(watched["key"])),
+            } for watched in grp]
+            await storage.record_activity_batch(g,uid,keys,watch_times,records)
             count+=len(grp)
-    if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
 async def process_movies(ch,g,uid,name,member,items,since,profile):
-    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True; pending={}
+    announced=await storage.get_announced(g,uid); state=await storage.get_activity_state(g,uid); watches=state["watch_times"]; p=await prefs(g,uid); count=0; ok=True
     for x in items or []:
         m=x.get("movie") or {}; ids=m.get("ids") or {}; sid=ids.get("simkl"); wr=x.get("last_watched_at")
         if sid is None or not wr: continue
@@ -645,13 +658,12 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         if not await send_embed(ch,e,"movie"):
             ok=False
             continue
-        await storage.add_announced(g,uid,[k])
-        await storage.update_activity_state(g,uid,watch_times={k:wr},flush=False)
-        await storage.record_watch(g,uid,"anime_movie" if anime_movie else "movie",title,k,wr,flush=False,genres=m.get("genres") or x.get("genres"))
-        await award_watch_progression(uid, f"{'anime_movie' if anime_movie else 'movie'}:{k}:{wr}", "anime_movie" if anime_movie else "movie", title, wr)
-        pending[k]=wr
+        media_type="anime_movie" if anime_movie else "movie"
+        await storage.record_activity_batch(g,uid,[k],{k:wr},[{
+            "media_type":media_type,"title":title,"item_key":k,"watched_at":wr,
+            "genres":m.get("genres") or x.get("genres"),"amount":xp_for_watch(media_type),
+        }])
         count+=1
-    if pending: await storage.update_activity_state(g,uid,watch_times=pending,flush=False)
     if count: await evaluate_achievements(g,uid,notify_channel=ch)
     return count,ok
 
@@ -819,7 +831,7 @@ async def reconcile_watch_progression(g, uid, u, token, changed_types, request_c
         episode_items=items or []
         movie_items=[]
         if t == "anime":
-            episode_items,movie_items=await split_anime_items(items)
+            episode_items,movie_items=await cached_split_anime_items(uid,items,request_cache)
 
         for item in movie_items:
             movie=item.get("movie") or item.get("show") or {}
@@ -875,7 +887,8 @@ async def seed_progression_history(uid, u, token, request_cache=None):
     progression = await storage.get_progression(uid)
     if progression.get("history_xp_seeded"):
         return token
-    seeded = 0
+    started=time.monotonic()
+    events=[]
     for t in MEDIA_TYPES:
         items, token = await cached_simkl_items(uid, u, token, t, request_cache=request_cache, timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
         if t == "movies":
@@ -889,13 +902,13 @@ async def seed_progression_history(uid, u, token, request_cache=None):
                 anime_movie = bool(movie.get("anime_type") == "movie" or movie.get("type") == "movie" or ids.get("mal"))
                 media_type = "anime_movie" if anime_movie else "movie"
                 event_key = f"{media_type}:movies:{sid}:{watched_at}"
-                result = await storage.award_watch_xp(uid, event_key, media_type, movie.get("title") or "Untitled", watched_at, xp_for_watch(media_type))
-                seeded += int(result.get("amount", 0))
+                events.append({"event_key":event_key,"media_type":media_type,"title":movie.get("title") or "Untitled",
+                               "at":watched_at,"amount":xp_for_watch(media_type)})
             continue
         episode_items = items or []
         movie_items = []
         if t == "anime":
-            episode_items, movie_items = await split_anime_items(items)
+            episode_items, movie_items = await cached_split_anime_items(uid,items,request_cache)
         for item in movie_items:
             movie = item.get("movie") or item.get("show") or {}
             ids = movie.get("ids") or {}
@@ -904,18 +917,19 @@ async def seed_progression_history(uid, u, token, request_cache=None):
             if sid is None or not watched_at:
                 continue
             event_key = f"anime_movie:movies:{sid}:{watched_at}"
-            result = await storage.award_watch_xp(uid, event_key, "anime_movie", movie.get("title") or "Untitled", watched_at, xp_for_watch("anime_movie"))
-            seeded += int(result.get("amount", 0))
+            events.append({"event_key":event_key,"media_type":"anime_movie","title":movie.get("title") or "Untitled",
+                           "at":watched_at,"amount":xp_for_watch("anime_movie")})
         for episode in iter_show_episodes(t, episode_items):
             watched_at = episode.get("watched_raw")
             if not watched_at:
                 continue
             media_type = "anime_episode" if t == "anime" else "episode"
             event_key = f"{media_type}:series:{t}:{episode['simkl_id']}:{episode['season_num']}:{episode['episode_number']}:{watched_at}"
-            result = await storage.award_watch_xp(uid, event_key, media_type, episode.get("show_title") or "Untitled", watched_at, xp_for_watch(media_type))
-            seeded += int(result.get("amount", 0))
-    await storage.mark_history_xp_seeded(uid)
-    log.info("Historical progression backfill completed for user %s: +%d XP.", uid, seeded)
+            events.append({"event_key":event_key,"media_type":media_type,"title":episode.get("show_title") or "Untitled",
+                           "at":watched_at,"amount":xp_for_watch(media_type)})
+    seeded=await storage.seed_progression_batch(uid,events)
+    log.info("Historical progression backfill completed for user %s: %d events, +%d XP in %.2fs.",
+             uid,len(events),seeded,time.monotonic()-started)
     return token
 async def notify_history_backfill(guild_id_value, uid, xp_earned, progression, channel):
     """Send a one-time summary after historical XP backfill completes."""
@@ -1005,7 +1019,8 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         return 0
     if not gu.get("history_seeded"):
         try:
-            token=await seed_history(g,uid,u,token,request_cache)
+            async with history_backfill_semaphore:
+                token=await seed_history(g,uid,u,token,request_cache)
             gu["history_seeded"]=True
         except Exception as exc:
             error=f"history seed: {type(exc).__name__}: {exc}"
@@ -1026,7 +1041,9 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
     progression_before_backfill=await storage.get_progression(uid)
     history_backfill_needed=not progression_before_backfill.get("history_xp_seeded")
     try:
-        token=await seed_progression_history(uid,u,token,request_cache)
+        if history_backfill_needed:
+            async with history_backfill_semaphore:
+                token=await seed_progression_history(uid,u,token,request_cache)
     except Exception as exc:
         error=f"progression history seed: {type(exc).__name__}: {exc}"
         await mark_poll_failure(g,uid,error,previous_failures)
@@ -1039,7 +1056,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
             int(progression_after_backfill.get("xp", 0))
             - int(progression_before_backfill.get("xp", 0))
         )
-        if not history_backfill_needed:
+        if backfill_xp <= 0:
             # Compatibility path for users whose history was backfilled before
             # the completion notification feature was introduced.
             backfill_xp=sum(
@@ -1101,7 +1118,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
             )
 
             if t=="anime":
-                anime_shows,anime_movies=await split_anime_items(items)
+                anime_shows,anime_movies=await cached_split_anime_items(uid,items,request_cache)
                 sc,so=await process_status(
                     ch,g,uid,name,member,t,anime_shows,profile
                 )
@@ -1211,21 +1228,6 @@ async def poll_all(g=None, force_reconcile=False):
             len(users),len(targets),posted,duration,POLL_CONCURRENCY
         )
         return posted
-
-
-def achievement_progress(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
-    episodes=int(statistics.get("episodes_watched",0))
-    movies=int(statistics.get("movies_watched",0))
-    anime_episodes=int(statistics.get("anime_episodes_watched",0))
-    total=episodes+movies
-    _,longest=calculate_streaks(statistics.get("watch_dates"),timezone_name)
-    return {
-        "total": total,
-        "episodes": episodes,
-        "movies": movies,
-        "anime_episodes": anime_episodes,
-        "streak": longest,
-    }
 
 
 def achievement_progress_from_events(events, timezone_name=DEFAULT_TIMEZONE_NAME):
@@ -1359,34 +1361,6 @@ def calculate_streaks(watch_dates, timezone_name=DEFAULT_TIMEZONE_NAME):
         longest=max(longest,length)
     return current,longest
 
-
-async def award_watch_progression(uid, event_key, media_type, title, watched_at, runtime_minutes=None):
-    result = await storage.award_watch_xp(uid, event_key, media_type, title, watched_at, xp_for_watch(media_type, runtime_minutes))
-    if not result.get("awarded"):
-        return 0
-    state = await storage.get_challenge_state(uid)
-    events = state.get("xp_events", [])
-    now = parse_iso(watched_at)
-    daily, weekly = challenges_for(now.date())
-    daily_key = f"daily:{now.date().isoformat()}"
-    monday = now.date() - timedelta(days=now.date().weekday())
-    weekly_key = f"weekly:{monday.isoformat()}"
-    daily_start = f"{now.date().isoformat()}T00:00:00+00:00"
-    daily_end = f"{now.date().isoformat()}T23:59:59+00:00"
-    weekly_start = f"{monday.isoformat()}T00:00:00+00:00"
-    weekly_end = f"{(monday + timedelta(days=6)).isoformat()}T23:59:59+00:00"
-    completions = state.get("challenge_completions", {})
-    for challenge in daily:
-        if challenge["id"] in completions.get(daily_key, {}):
-            continue
-        if challenge_progress(events, challenge, daily_start, daily_end) >= challenge["target"]:
-            await storage.complete_challenge(uid, challenge["id"], daily_key, challenge["xp"])
-    for challenge in weekly:
-        if challenge["id"] in completions.get(weekly_key, {}):
-            continue
-        if challenge_progress(events, challenge, weekly_start, weekly_end) >= challenge["target"]:
-            await storage.complete_challenge(uid, challenge["id"], weekly_key, challenge["xp"])
-    return int(result.get("amount", 0))
 
 def achievement_notification_embed(mention, achievement_id):
     achievement=ACHIEVEMENTS[achievement_id]
@@ -1578,10 +1552,6 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
                 guild_id_value,
             )
     return False
-
-def stats_total(statistics):
-    return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
-
 
 async def refresh_community_state(guild_id_value):
     zone=(await storage.get_timezone(guild_id_value))["name"]
@@ -1785,23 +1755,6 @@ ACHIEVEMENT_CHOICES=[
 ]
 
 
-
-def progression_embed(uid, progression, title="SIMKL Progression"):
-    xp = int(progression.get("xp", 0))
-    lifetime = int(progression.get("lifetime_xp", 0))
-    prestige = int(progression.get("prestige", 0))
-    level, within, needed = level_progress(xp)
-    rank = rank_for_level(level)
-    if level >= 100:
-        bar = "████████████████████"
-        progress_text = "MAX LEVEL"
-    else:
-        filled = max(0, min(20, round((within / needed) * 20)))
-        bar = "█" * filled + "░" * (20 - filled)
-        progress_text = f"{within:,} / {needed:,} XP"
-    e = discord.Embed(title=title, color=0x5865F2)
-    e.description = f"**Level {level} — {rank}**\n\n{bar}\n**{progress_text}**\n\n**Prestige:** {prestige}\n**Lifetime XP:** {lifetime:,}"
-    return e
 
 @bot.tree.command(name="simkl-challenges", description="View your current daily and weekly watch challenges.")
 async def simkl_challenges(i):
@@ -2089,21 +2042,6 @@ async def show_profile(i,user):
 @app_commands.describe(user="Optional server member to view")
 async def simkl_stats(i,user: discord.Member | None = None):
     await show_profile(i,user)
-
-
-@bot.tree.command(name="simkl-streak",description="Show your SIMKL watch streak.")
-@app_commands.describe(user="Optional server member to view")
-async def simkl_streak(i,user: discord.Member | None = None):
-    g=guild_id(i)
-    if not g:
-        await i.response.send_message("This command must be used in a server.",ephemeral=True); return
-    target=user or i.user
-    stats=await storage.get_statistics(g,str(target.id))
-    timezone_info=await storage.get_timezone(g)
-    current,longest=calculate_streaks(stats.get("watch_dates"), timezone_info["name"])
-    embed=discord.Embed(title=f"🔥 {target.display_name}'s Watch Streak",description=f"Current streak: **{current} day{'s' if current != 1 else ''}**\nLongest streak: **{longest} day{'s' if longest != 1 else ''}**",color=0xF1C40F)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    await i.response.send_message(embed=embed)
 
 
 LEADERBOARD_CHOICES=[
