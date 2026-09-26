@@ -158,7 +158,10 @@ async def is_anime_movie_item(item):
         return True
 
     show = item.get("show") or {}
-    if show.get("type") == "movie" or show.get("anime_type") == "movie":
+    # SIMKL puts anime_type on the list entry, not necessarily on its show.
+    # With include_all_episodes=yes a film can also have a virtual S01E01;
+    # the explicit movie type must take precedence over episode rows.
+    if item.get("anime_type") == "movie" or show.get("type") == "movie" or show.get("anime_type") == "movie":
         log.info(
             "Classified anime item as movie: %s (SIMKL metadata).",
             show.get("title") or "Untitled",
@@ -169,7 +172,7 @@ async def is_anime_movie_item(item):
     # win over third-party ID lookups. TMDB IDs can collide across media
     # types; never classify a series as a movie just because TMDB has a movie
     # record for the same numeric ID.
-    if show.get("type") in {"tv", "show"} or show.get("anime_type") in {
+    if item.get("anime_type") in {"tv", "special", "ova", "ona", "music video"} or show.get("type") in {"tv", "show"} or show.get("anime_type") in {
         "tv", "special", "ova", "ona", "music video"
     }:
         return False
@@ -591,7 +594,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
                 # Anime movie records are especially prone to carrying a
                 # stale/season-specific TMDB ID. Resolve by title first so a
                 # valid-but-wrong TMDB movie ID cannot silently win.
-                match=None if tmdb_movie_id is not None else await tmdb.find_movie_by_title(m.get("title"))
+                match=await tmdb.find_movie_by_title(m.get("title"))
                 if match:
                     tmdb_movie_id=match["id"]
                     english_title=match.get("title")

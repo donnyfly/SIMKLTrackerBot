@@ -31,6 +31,7 @@ def test_full_history_requests_completed_and_dropped_episode_rows(monkeypatch):
         assert params["extended"]=="full_anime_seasons"
         assert params["episode_watched_at"]=="yes"
         assert params["include_all_episodes"]=="yes"
+        assert params["language"]=="en"
     asyncio.run(scenario())
 
 
@@ -182,6 +183,40 @@ def test_anime_classification_is_reused_within_one_poll(monkeypatch):
         second=await bot.cached_split_anime_items("42",items,cache)
         assert first is second
         classify.assert_awaited_once_with(items)
+    asyncio.run(scenario())
+
+
+def test_anime_movie_with_virtual_episode_uses_movie_activity_and_english_title(monkeypatch):
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            monkeypatch.setattr(storage_module,"DATA_PATH",f"{directory}/store.json")
+            store=storage_module.Storage()
+            monkeypatch.setattr(bot,"storage",store)
+            await store.link_user("123","42","token",None,"tester","2026-09-20T00:00:00Z")
+            item={"anime_type":"movie","status":"completed","last_watched_at":"2026-09-26T10:00:00Z",
+                  "show":{"title":"Romaji Title","ids":{"simkl":77,"tmdb":79707,"tvdb":1902}},
+                  "seasons":[{"number":1,"episodes":[{"number":1,"watched_at":"2026-09-26T10:00:00Z"}]}]}
+            shows,movies=await bot.split_anime_items([item])
+            assert not shows and len(movies)==1
+            assert movies[0]["movie"]["type"]=="movie"
+            assert movies[0]["seasons"]==item["seasons"]
+            monkeypatch.setattr(bot,"prefs",AsyncMock(return_value={
+                "episode_code":False,"show_imdb":False,"show_mal":False,
+                "activity_text":"detailed","artwork":"poster"}))
+            finder=AsyncMock(return_value={"id":42,"title":"English Movie Title"})
+            monkeypatch.setattr(bot.tmdb,"find_movie_by_title",finder)
+            monkeypatch.setattr(bot.tmdb,"get_movie_backdrop",AsyncMock(return_value=None))
+            desc=[]
+            monkeypatch.setattr(bot,"build_embed",lambda t,d,*args:desc.append((t,d)) or object())
+            monkeypatch.setattr(bot,"send_embed",AsyncMock(return_value=True))
+            monkeypatch.setattr(bot,"evaluate_achievements",AsyncMock(return_value=[]))
+            count,ok=await bot.process_movies(SimpleNamespace(),"123","42","Tester",SimpleNamespace(),
+                                              movies,bot.parse_iso("2026-09-20T00:00:00Z"),None)
+            assert (count,ok)==(1,True)
+            assert desc==[("movies","watched a movie **English Movie Title**")]
+            assert (await store.get_statistics("123","42"))["anime_movies_watched"]==1
+            assert (await store.get_statistics("123","42"))["anime_episodes_watched"]==0
+            finder.assert_awaited_once_with("Romaji Title")
     asyncio.run(scenario())
 
 
