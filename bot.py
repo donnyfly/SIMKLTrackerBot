@@ -1832,9 +1832,12 @@ async def simkl_achievements(i,user: discord.Member | None = None):
     target=user or i.user
     await evaluate_achievements(g,str(target.id))
     unlocked=await storage.get_achievements(g,str(target.id))
-    stats=await storage.get_statistics(g,str(target.id))
     timezone_info=await storage.get_timezone(g)
-    progress=achievement_progress(stats,timezone_info["name"])
+    progression=await storage.get_progression(str(target.id))
+    progress=achievement_progress_from_events(
+        progression.get("xp_events", []),
+        timezone_info["name"],
+    )
 
     lines=[]
     for aid,achievement in all_achievements():
