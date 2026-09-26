@@ -15,6 +15,18 @@ def test_progression_curve():
     assert rank_for_level(90) == "Screen Immortal"
 
 
+def test_activity_based_episode_xp():
+    assert xp_for_watch("episode") == 100
+    assert xp_for_watch("episode", 39) == 100
+    assert xp_for_watch("episode", 40) == 125
+    assert xp_for_watch("episode", 59) == 125
+    assert xp_for_watch("episode", 60) == 150
+    assert xp_for_watch("episode", 90) == 175
+    assert xp_for_watch("episode", 120) == 200
+    assert xp_for_watch("episode", 180) == 250
+    assert xp_for_watch("movie", 140) == 300
+
+
 def test_challenge_rotation():
     from progression import challenges_for
 
