@@ -3,6 +3,7 @@ import tempfile
 
 import storage as storage_module
 from progression import challenges_for, level_from_xp, rank_for_level, xp_for_level, xp_for_watch
+from achievements import ACHIEVEMENTS
 
 
 def test_progression_curve():
@@ -34,6 +35,12 @@ def test_challenge_rotation():
     assert len(daily) == 3
     assert len(weekly) == 3
     assert all("target" in item and "xp" in item for item in daily + weekly)
+
+def test_expanded_achievement_catalog_has_reconciled_categories():
+    assert len(ACHIEVEMENTS) >= 35
+    assert {item["category"] for item in ACHIEVEMENTS.values()} <= {
+        "total","episodes","movies","anime_episodes","anime_movies","unique_titles","active_days","streak"
+    }
 
 
 def test_storage_watch_xp_is_idempotent():

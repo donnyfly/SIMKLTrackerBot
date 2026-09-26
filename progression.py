@@ -31,6 +31,15 @@ def level_from_xp(xp: int) -> int:
         level = candidate
     return level
 
+def roll_prestige(progression: dict) -> int:
+    """Carry XP beyond level 100 into successive prestige tiers."""
+    threshold = xp_for_level(100)
+    count, remainder = divmod(max(0, int(progression.get("xp", 0))), threshold)
+    if count:
+        progression["xp"] = remainder
+        progression["prestige"] = int(progression.get("prestige", 0)) + count
+    return count
+
 def level_progress(xp: int) -> tuple[int, int, int]:
     level = level_from_xp(xp)
     current_floor = 0 if level == 1 else xp_for_level(level)

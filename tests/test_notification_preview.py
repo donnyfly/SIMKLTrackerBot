@@ -90,7 +90,7 @@ def test_debug_previews_are_private_and_do_not_write(monkeypatch):
         achievement=_interaction()
         await command.callback(
             achievement, app_commands.Choice(name="Achievement unlocked", value="achievement"),
-            app_commands.Choice(name="First Watch", value="first_watch"),
+            "first_watch",
         )
         achievement.response.defer.assert_awaited_once_with(ephemeral=True)
         sent=achievement.followup.send.await_args.kwargs
@@ -213,7 +213,7 @@ def test_anime_movie_with_virtual_episode_uses_movie_activity_and_english_title(
             count,ok=await bot.process_movies(SimpleNamespace(),"123","42","Tester",SimpleNamespace(),
                                               movies,bot.parse_iso("2026-09-20T00:00:00Z"),None)
             assert (count,ok)==(1,True)
-            assert desc==[("movies","watched a movie **English Movie Title**")]
+            assert desc==[("movies","Watched a movie **English Movie Title**")]
             assert (await store.get_statistics("123","42"))["anime_movies_watched"]==1
             assert (await store.get_statistics("123","42"))["anime_episodes_watched"]==0
             finder.assert_awaited_once_with("Romaji Title")

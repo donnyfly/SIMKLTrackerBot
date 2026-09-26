@@ -12,7 +12,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from progression import challenges_for, level_from_xp
+from progression import challenges_for, roll_prestige
 from community import episode_contributions, split_pool
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
@@ -241,6 +241,7 @@ def _add_watch_xp_events(progression: dict, events: list[dict]) -> tuple[int,lis
         progression["xp"]+=amount
         progression["lifetime_xp"]+=amount
         progression["xp_events"].extend(added)
+        roll_prestige(progression)
     return amount,added
 
 
@@ -288,6 +289,7 @@ def _complete_watch_challenges(progression: dict, added: list[dict]) -> None:
                 completions.setdefault(key,{})[challenge["id"]]={"completed_at":now,"xp":challenge["xp"]}
                 progression["xp"]+=challenge["xp"]
                 progression["lifetime_xp"]+=challenge["xp"]
+                roll_prestige(progression)
     for week in touched_weeks:
         for challenge in challenges_for(date.fromisoformat(week))[1]:
             key=f"weekly:{week}"
@@ -295,6 +297,7 @@ def _complete_watch_challenges(progression: dict, added: list[dict]) -> None:
                 completions.setdefault(key,{})[challenge["id"]]={"completed_at":now,"xp":challenge["xp"]}
                 progression["xp"]+=challenge["xp"]
                 progression["lifetime_xp"]+=challenge["xp"]
+                roll_prestige(progression)
 
 
 def _default_activity_state() -> dict:
@@ -340,6 +343,7 @@ def _normalise_user(user: dict) -> None:
     progression.setdefault("xp", 0)
     progression.setdefault("lifetime_xp", 0)
     progression.setdefault("prestige", 0)
+    progression.setdefault("prestige_notified", int(progression.get("prestige", 0)))
     progression.setdefault("watch_xp_keys", {})
     progression.setdefault("xp_events", [])
     progression.setdefault("challenge_completions", {})
@@ -491,6 +495,8 @@ class Storage:
         if not isinstance(user, dict):
             return None
         _normalise_user(user)
+        if roll_prestige(user["progression"]):
+            self._dirty = True
         return user
 
     def _guild(self, guild_id: str, create: bool = False) -> dict | None:
@@ -1009,18 +1015,28 @@ class Storage:
                 return {}
             return {"xp_events": copy.deepcopy(user["progression"].get("xp_events", [])), "challenge_completions": copy.deepcopy(user["progression"].get("challenge_completions", {}))}
 
-    async def prestige_user(self, discord_user_id: str) -> bool:
+    async def claim_prestige_notifications(self, discord_user_id: str) -> list[int]:
+        """Claim each new prestige once, even across servers and polling workers."""
         async with _lock:
             user = self._user(discord_user_id)
             if not user:
-                return False
-            if level_from_xp(int(user["progression"].get("xp", 0))) < 100:
-                return False
-            user["progression"]["xp"] = 0
-            user["progression"]["prestige"] = int(user["progression"].get("prestige", 0)) + 1
+                return []
+            progression = user["progression"]
+            previous = int(progression.get("prestige_notified", 0))
+            current = int(progression.get("prestige", 0))
+            if current <= previous:
+                return []
+            progression["prestige_notified"] = current
             self._dirty = True
-        await self.flush()
-        return True
+            return list(range(previous + 1, current + 1))
+
+    async def retry_prestige_notification(self, discord_user_id: str, number: int) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if user:
+                progression = user["progression"]
+                progression["prestige_notified"] = min(int(progression["prestige_notified"]), number - 1)
+                self._dirty = True
 
     async def get_activity_state(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
@@ -1154,6 +1170,7 @@ class Storage:
         amount: int,
         title: str,
         awarded_at: str,
+        *, flush: bool = True,
     ) -> dict:
         """Award achievement XP exactly once, including for old unlocks."""
         async with _lock:
@@ -1176,9 +1193,11 @@ class Storage:
                 "event_key": f"achievement:{achievement_id}",
                 "achievement_id": achievement_id,
             })
+            roll_prestige(progression)
             self._dirty = True
             result = copy.deepcopy(progression)
-        await self.flush()
+        if flush:
+            await self.flush()
         return {"awarded": True, "amount": xp, "progression": result}
 
     async def needs_watch_statistics_rebuild(self, guild_id: str | int, discord_user_id: str) -> bool:
@@ -1471,6 +1490,7 @@ class Storage:
                     delta=int(desired.get(uid,0))-int(previous.get(uid,0))
                     user["progression"]["xp"]=max(0,before+delta)
                     user["progression"]["lifetime_xp"]=max(0,int(user["progression"].get("lifetime_xp",0))+delta)
+                    roll_prestige(user["progression"])
                     reward_key=f"{gid}:{key}"
                     if desired.get(uid):
                         user["progression"].setdefault("community_rewards",{})[reward_key]=int(desired[uid])

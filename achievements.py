@@ -151,6 +151,32 @@ ACHIEVEMENTS = {
     },
 }
 
+# Milestones use reconciled watch events, so removing watches can relock them.
+for key, name, emoji, description, category, threshold, xp in (
+    ("episodes_10", "Pilot Season", "📺", "Watch 10 episodes.", "episodes", 10, 150),
+    ("episodes_100", "Hundred Episode Club", "📚", "Watch 100 episodes.", "episodes", 100, 350),
+    ("episodes_500", "Marathon Viewer", "🏃", "Watch 500 episodes.", "episodes", 500, 750),
+    ("episodes_5000", "Endless Episodes", "🌌", "Watch 5,000 episodes.", "episodes", 5000, 3500),
+    ("movies_1", "Opening Night", "🍿", "Watch your first movie.", "movies", 1, 100),
+    ("movies_10", "Double Feature Fan", "🎟️", "Watch 10 movies.", "movies", 10, 200),
+    ("movies_50", "Box Office Regular", "🎬", "Watch 50 movies.", "movies", 50, 350),
+    ("movies_500", "Silver Screen Legend", "🎥", "Watch 500 movies.", "movies", 500, 2000),
+    ("anime_10", "First Arc", "🌸", "Watch 10 anime episodes.", "anime_episodes", 10, 150),
+    ("anime_100", "Arc Collector", "⛩️", "Watch 100 anime episodes.", "anime_episodes", 100, 350),
+    ("anime_500", "Season Traveller", "🎏", "Watch 500 anime episodes.", "anime_episodes", 500, 750),
+    ("anime_movies_1", "Anime Premiere", "🎞️", "Watch an anime movie.", "anime_movies", 1, 150),
+    ("anime_movies_10", "Anime Film Night", "🌙", "Watch 10 anime movies.", "anime_movies", 10, 350),
+    ("anime_movies_25", "Anime Film Collector", "🏮", "Watch 25 anime movies.", "anime_movies", 25, 600),
+    ("titles_25", "Explorer", "🧭", "Watch 25 different titles.", "unique_titles", 25, 300),
+    ("titles_100", "Media Explorer", "🗺️", "Watch 100 different titles.", "unique_titles", 100, 750),
+    ("active_days_30", "Thirty Days of Stories", "🗓️", "Watch on 30 different days.", "active_days", 30, 500),
+    ("active_days_100", "Century of Days", "📆", "Watch on 100 different days.", "active_days", 100, 1250),
+    ("streak_7", "One Week Streak", "🔥", "Watch on 7 consecutive days.", "streak", 7, 250),
+    ("streak_14", "Two Week Streak", "⚡", "Watch on 14 consecutive days.", "streak", 14, 350),
+):
+    ACHIEVEMENTS[key] = {"name": name, "emoji": emoji, "description": description,
+                         "category": category, "threshold": threshold, "xp": xp}
+
 
 def get_achievement(achievement_id):
     return ACHIEVEMENTS.get(achievement_id)

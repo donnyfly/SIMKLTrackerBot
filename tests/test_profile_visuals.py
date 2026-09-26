@@ -7,7 +7,7 @@ from PIL import Image
 
 import storage as storage_module
 from level_visuals import accent_for_level, prestige_style, render_prestige_gif
-from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png
+from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
 from progression import xp_for_level
 
 
@@ -40,6 +40,9 @@ def test_empty_genre_state_and_leaderboard_card():
         {"name":"Viewer","prestige":1,"level":9,"xp":500,"total":5},
     ])
     assert Image.open(board).size==(1080,845)
+    for heading in ("weekly recap","server statistics"):
+        card=render_summary_png("Server",heading,"This week",[("Episodes",32),("Movies",4)],[("Top watcher","Viewer · 12 watches")])
+        assert Image.open(card).size==(1080,735)
 
 
 def test_prestige_emblems_and_accents_vary():
@@ -54,7 +57,7 @@ def test_prestige_emblems_and_accents_vary():
         assert gif.n_frames>1
 
 
-def test_prestige_update_is_atomic():
+def test_prestige_rollover_is_automatic_and_atomic():
     async def scenario():
         with tempfile.TemporaryDirectory() as directory:
             previous=storage_module.DATA_PATH
@@ -62,10 +65,36 @@ def test_prestige_update_is_atomic():
             try:
                 store=storage_module.Storage()
                 await store.link_user("123","42","token",None,"viewer","2026-09-26T00:00:00Z")
-                await store.award_watch_xp("42","seed","episode","Example","2026-09-26T00:00:00Z",xp_for_level(100))
-                assert sorted(await asyncio.gather(store.prestige_user("42"),store.prestige_user("42")))==[False,True]
+                threshold=xp_for_level(100)
+                await store.award_watch_xp("42","seed","episode","Example","2026-09-26T00:00:00Z",2*threshold+123)
                 state=await store.get_progression("42")
-                assert state["prestige"]==1 and state["xp"]==0
+                assert state["prestige"]==2 and state["xp"]==123
+                assert state["lifetime_xp"]==2*threshold+123
+                assert await store.claim_prestige_notifications("42")==[1,2]
+                assert await store.claim_prestige_notifications("42")==[]
+            finally:
+                storage_module.DATA_PATH=previous
+    asyncio.run(scenario())
+
+
+def test_existing_level_100_xp_rolls_over_without_relinking():
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            previous=storage_module.DATA_PATH
+            storage_module.DATA_PATH=f"{directory}/store.json"
+            try:
+                store=storage_module.Storage()
+                await store.link_user("123","42","token",None,"viewer","2026-09-26T00:00:00Z")
+                await store.get_progression("42")
+                progression=store._data["users"]["42"]["progression"]
+                progression["xp"]=xp_for_level(100)+567
+                progression["lifetime_xp"]=xp_for_level(100)+567
+                assert (await store.get_progression("42"))["xp"]==567
+                assert await store.claim_prestige_notifications("42")==[1]
+                await store.flush()
+                restored=storage_module.Storage()
+                assert (await restored.get_progression("42"))["prestige"]==1
+                assert await restored.claim_prestige_notifications("42")==[]
             finally:
                 storage_module.DATA_PATH=previous
     asyncio.run(scenario())

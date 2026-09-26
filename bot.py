@@ -11,7 +11,7 @@ from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
 from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
 from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif, render_prestige_gif
-from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png
+from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
 from community import community_week
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
@@ -635,7 +635,7 @@ async def process_movies(ch,g,uid,name,member,items,since,profile):
         ):
             ratings = await get_movie_ratings(tmdb_movie_id)
 
-        verb="rewatched" if rw else "watched a movie"
+        verb="Rewatched" if rw else "Watched a movie"
         desc=f"{verb}"
         if p["activity_text"]=="detailed":
             desc=f"{verb} **{title}**"
@@ -1177,7 +1177,12 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         await storage.flush()
 
     progression_after_poll=await storage.get_progression(uid)
+    for number in await storage.claim_prestige_notifications(uid):
+        if not await send_prestige_notification(ch.send,f"<@{uid}>",number,progression_after_poll.get("lifetime_xp",0)):
+            await storage.retry_prestige_notification(uid,number)
+            break
     await notify_level_up(g,uid,progression_before_poll,progression_after_poll,ch)
+    await storage.flush()
     return posted
 
 async def poll_all(g=None, force_reconcile=False):
@@ -1288,6 +1293,9 @@ def achievement_progress_from_events(events, timezone_name=DEFAULT_TIMEZONE_NAME
         "episodes": episodes,
         "movies": movies,
         "anime_episodes": anime_episodes,
+        "anime_movies": sum(event.get("media_type") == "anime_movie" for event in active),
+        "unique_titles": len({str(event.get("title")).casefold() for event in active if event.get("title")}),
+        "active_days": len(watch_dates),
         "streak": longest,
     }
 
@@ -1335,8 +1343,8 @@ async def evaluate_achievements(g, uid, notify_channel=None):
                 achievement_xp,
                 achievement["name"],
                 now,
+                flush=False,
             )
-
     if newly_unlocked:
         await storage.flush()
 
@@ -1426,7 +1434,7 @@ async def send_prestige_notification(send, mention, prestige, lifetime_xp, *, pr
     accent,_=prestige_style(prestige)
     embed=discord.Embed(
         title=f"Prestige {prestige} Unlocked",
-        description=(f"{mention} reached **Prestige {prestige}**. Your level starts again at **1**; "
+        description=(f"{mention} reached **Prestige {prestige}**. XP beyond Level 100 carries forward; "
                      f"your lifetime **{int(lifetime_xp):,} XP** is preserved."),
         color=discord.Color.from_rgb(*accent),
     )
@@ -1584,7 +1592,13 @@ async def refresh_community_state(guild_id_value):
         channel_id=await storage.get_channel(guild_id_value)
         channel=bot.get_channel(int(channel_id)) if channel_id else None
         if channel:
+            progression=await storage.get_progression(change["uid"])
+            for number in await storage.claim_prestige_notifications(change["uid"]):
+                if not await send_prestige_notification(channel.send,f"<@{change['uid']}>",number,progression.get("lifetime_xp",0)):
+                    await storage.retry_prestige_notification(change["uid"],number)
+                    break
             await notify_level_up(guild_id_value,change["uid"],{"xp":change["before"]},{"xp":change["after"]},channel)
+            await storage.flush()
     return state
 
 def weekly_period(timezone_name, period="current"):
@@ -1602,8 +1616,9 @@ def weekly_period(timezone_name, period="current"):
         end=today
     return start,end
 
-def build_weekly_recap(rows, start, end, guild_name, period_label):
+def build_weekly_recap(rows, start, end, guild_name, period_label, *, with_visual=False):
     totals={"total":0,"episodes":0,"movies":0,"anime_episodes":0,"anime_movies":0}
+    names={row["discord_user_id"]:row.get("simkl_username") or row["discord_user_id"] for row in rows}
     active_days=set()
     user_rows=[]
     for row in rows:
@@ -1642,6 +1657,12 @@ def build_weekly_recap(rows, start, end, guild_name, period_label):
         description += "\n\nNo watch activity was recorded during this period."
     embed=discord.Embed(title=f"📅 {guild_name} · Weekly Recap",description=description,color=0x5865F2)
     embed.set_footer(text=f"{start.isoformat()} → {end.isoformat()}")
+    if with_visual:
+        metrics=[("Total watches",totals["total"]),("Episodes",totals["episodes"]),("Movies",totals["movies"]),
+                 ("Anime episodes",totals["anime_episodes"]),("Anime movies",totals["anime_movies"]),("Active days",len(active_days))]
+        leaders=[("Active users",str(len(user_rows)))]
+        leaders.extend((f"#{n} watcher",f"{names[uid]} · {total:,} watches") for n,(total,uid) in enumerate(user_rows[:4],1))
+        return embed,metrics,leaders
     return embed
 
 async def generate_weekly_recap(guild, period="current"):
@@ -1649,7 +1670,18 @@ async def generate_weekly_recap(guild, period="current"):
     start,end=weekly_period(timezone_info["name"],period)
     rows=await storage.get_guild_statistics(guild.id)
     label="Current week" if period=="current" else "Previous week"
-    return build_weekly_recap(rows,start,end,guild.name,label)
+    return build_weekly_recap(rows,start,end,guild.name,label,with_visual=True),f"{start.isoformat()} → {end.isoformat()}"
+
+async def send_visual_summary(send, guild_name, heading, result, filename):
+    (embed,metrics,leaders),subtitle=result
+    try:
+        image=await asyncio.to_thread(render_summary_png,guild_name,heading,subtitle,metrics,leaders)
+        embed.set_image(url=f"attachment://{filename}")
+        await send(embed=embed,file=discord.File(image,filename=filename))
+    except Exception:
+        log.exception("Could not render or send %s summary; sending embed fallback.",heading)
+        embed.set_image(url=None)
+        await send(embed=embed)
 
 async def send_weekly_recap(guild, period="current"):
     channel_id=await storage.get_channel(guild.id)
@@ -1661,7 +1693,7 @@ async def send_weekly_recap(guild, period="current"):
             channel=await bot.fetch_channel(int(channel_id))
         except Exception:
             return False
-    await channel.send(embed=await generate_weekly_recap(guild,period))
+    await send_visual_summary(channel.send,guild.name,"weekly recap",await generate_weekly_recap(guild,period),"weekly-recap.png")
     return True
 
 async def send_due_weekly_recaps():
@@ -1765,14 +1797,15 @@ async def simkl_weekly_recap(i, period: app_commands.Choice[str] | None = None):
             return
     selected=period.value if period else "current"
     await i.response.defer(ephemeral=True)
-    await channel.send(embed=await generate_weekly_recap(i.guild,selected))
+    await send_visual_summary(channel.send,i.guild.name,"weekly recap",await generate_weekly_recap(i.guild,selected),"weekly-recap.png")
     await i.followup.send(f"Posted the **{'current' if selected == 'current' else 'previous'} week** recap in {channel.mention}.",ephemeral=True)
 
 
-ACHIEVEMENT_CHOICES=[
-    app_commands.Choice(name=f"{a['emoji']} {a['name']}",value=aid)
-    for aid,a in all_achievements()
-]
+async def achievement_autocomplete(i, current: str):
+    needle=current.casefold()
+    return [app_commands.Choice(name=f"{a['emoji']} {a['name']}",value=aid)
+            for aid,a in all_achievements()
+            if needle in a["name"].casefold() or needle in aid.casefold()][:25]
 
 
 
@@ -1840,21 +1873,6 @@ async def simkl_community(i):
     e.add_field(name="Contributors",value="\n".join(rows) if rows else "No episodes contributed yet.",inline=False)
     e.set_footer(text="Server-local weekly goal · bonus XP is added to normal watch XP")
     await i.followup.send(embed=e,allowed_mentions=discord.AllowedMentions.none())
-
-@bot.tree.command(name="simkl-prestige", description="Prestige after reaching Level 100.")
-async def simkl_prestige(i):
-    uid = str(i.user.id)
-    progression = await storage.get_progression(uid)
-    level = level_progress(int(progression.get("xp", 0)))[0]
-    if level < 100:
-        await i.response.send_message(f"You need Level 100 to prestige. You are currently Level {level}.", ephemeral=True)
-        return
-    await i.response.defer()
-    if not await storage.prestige_user(uid):
-        await i.followup.send("Could not update prestige. Please try again.", ephemeral=True)
-        return
-    updated = await storage.get_progression(uid)
-    await send_prestige_notification(i.followup.send, i.user.mention, updated.get("prestige", 0), updated.get("lifetime_xp", 0))
 
 @bot.tree.command(name="simkl-user-reset",description="Reset your SIMKL tracking history for this server.")
 @app_commands.describe(confirm="Confirm that you want to reset your server-local tracking state")
@@ -1930,14 +1948,27 @@ async def simkl_achievements(i,user: discord.Member | None = None):
             current=progress.get(achievement["category"],0)
             lines.append(f"🔒 **{achievement['name']}** · **+{int(achievement.get('xp', 0)):,} XP** — {min(current,achievement['threshold']):,}/{achievement['threshold']:,}\n{achievement['description']}")
 
-    embed=discord.Embed(
-        title=f"🏆 {target.display_name}'s Achievements",
-        description="\n\n".join(lines),
-        color=0xF1C40F,
-    )
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.set_footer(text=f"{len(unlocked)}/{len(ACHIEVEMENTS)} unlocked")
-    await i.response.send_message(embed=embed)
+    pages=[]
+    page=[]
+    length=0
+    for line in lines:
+        if page and length+len(line)+2>3500:
+            pages.append(page)
+            page=[]
+            length=0
+        page.append(line)
+        length+=len(line)+2
+    if page:
+        pages.append(page)
+    embeds=[]
+    for index,chunk in enumerate(pages):
+        embed=discord.Embed(title=f"🏆 {target.display_name}'s Achievements · {index+1}/{len(pages)}",
+                            description="\n\n".join(chunk),color=0xF1C40F)
+        embed.set_footer(text=f"{len(unlocked)}/{len(ACHIEVEMENTS)} unlocked")
+        embeds.append(embed)
+    if embeds:
+        embeds[0].set_thumbnail(url=target.display_avatar.url)
+    await i.response.send_message(embeds=embeds)
 
 
 @bot.tree.command(name="simkl-debug",description="(Admin) Privately preview progression notifications without changing XP.")
@@ -1949,9 +1980,9 @@ async def simkl_achievements(i,user: discord.Member | None = None):
         app_commands.Choice(name="Achievement unlocked", value="achievement"),
         app_commands.Choice(name="Prestige unlocked", value="prestige"),
     ],
-    achievement=ACHIEVEMENT_CHOICES,
     rank=[app_commands.Choice(name=name,value=minimum) for minimum,name in RANKS],
 )
+@app_commands.autocomplete(achievement=achievement_autocomplete)
 @app_commands.describe(
     feature="Notification to preview",
     achievement="Required for an achievement preview",
@@ -1962,7 +1993,7 @@ async def simkl_achievements(i,user: discord.Member | None = None):
 async def simkl_debug(
     i,
     feature: app_commands.Choice[str],
-    achievement: app_commands.Choice[str] | None = None,
+    achievement: str | None = None,
     level: app_commands.Range[int, 2, 100] | None = None,
     rank: app_commands.Choice[int] | None = None,
     prestige: app_commands.Range[int, 0, 1000] | None = None,
@@ -1971,7 +2002,7 @@ async def simkl_debug(
         await i.response.send_message(NOT_ADMIN_MESSAGE,ephemeral=True)
         return
     if feature.value == "achievement":
-        if achievement is None or achievement.value not in ACHIEVEMENTS:
+        if achievement is None or achievement not in ACHIEVEMENTS:
             await i.response.send_message("Choose an achievement to preview.",ephemeral=True)
             return
         if level is not None or rank is not None:
@@ -2010,7 +2041,7 @@ async def simkl_debug(
     # Defer before rendering; GIF generation can exceed Discord's initial response window.
     await i.response.defer(ephemeral=True)
     if feature.value == "achievement":
-        sent=await send_achievement_notification(i.followup.send, i.user.mention, achievement.value, preview=True)
+        sent=await send_achievement_notification(i.followup.send, i.user.mention, achievement, preview=True)
     elif feature.value == "prestige":
         current=await storage.get_progression(str(i.user.id))
         number=prestige if prestige is not None else int(current.get("prestige", 0)) + 1
@@ -2119,8 +2150,9 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
         await i.followup.send(embed=embed)
 
 
-def build_server_stats(rows, guild_name):
+def build_server_stats(rows, guild_name, *, with_visual=False):
     linked=len(rows)
+    names={row["discord_user_id"]:row.get("simkl_username") or row["discord_user_id"] for row in rows}
     episodes=0
     movies=0
     anime_episodes=0
@@ -2222,6 +2254,13 @@ def build_server_stats(rows, guild_name):
         )
 
     embed.set_footer(text="All-time statistics · Server-wide")
+    if with_visual:
+        metrics=[("Total watches",total_watches),("Episodes",episodes),("Movies",movies),
+                 ("Anime episodes",anime_episodes),("Anime movies",anime_movies),("Active days",len(active_days))]
+        leaders=[("Tracked users",str(linked))]
+        leaders.extend((f"#{n} watcher",f"{names[uid]} · {total:,} watches") for n,(total,uid) in enumerate(total_watchers[:2],1))
+        leaders.extend((f"#{n} title",f"{top['title']} · {top['count']:,}") for n,top in enumerate(top_titles[:2],1))
+        return embed,metrics,leaders
     return embed
 
 
@@ -2240,7 +2279,9 @@ async def simkl_server_stats(i):
                  if pending else "No watch statistics have been recorded in this server yet.")
         await i.response.send_message(message,ephemeral=True)
         return
-    await i.response.send_message(embed=build_server_stats(rows,i.guild.name))
+    await i.response.defer()
+    result=build_server_stats(rows,i.guild.name,with_visual=True),"All-time statistics · Server-wide"
+    await send_visual_summary(i.followup.send,i.guild.name,"server statistics",result,"server-stats.png")
 
 
 

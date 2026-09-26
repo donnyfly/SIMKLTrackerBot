@@ -169,3 +169,29 @@ def render_leaderboard_png(guild_name, category, rows):
     image.save(output,format="PNG",optimize=True)
     output.seek(0)
     return output
+
+
+def render_summary_png(guild_name, heading, subtitle, metrics, leaders):
+    """Shared visual language for weekly recaps and all-time server stats."""
+    image=Image.new("RGB",(1080,735),BG)
+    draw=ImageDraw.Draw(image)
+    accent=(239,190,105)
+    draw.text((48,35),f"SIMKL / {heading.upper()}",font=_font(19),fill=accent)
+    draw.text((48,67),_short(draw,guild_name,_font(35),830),font=_font(35),fill=WHITE)
+    draw.text((48,112),_short(draw,subtitle,_font(17),940),font=_font(17),fill=MUTED)
+    draw.rounded_rectangle((48,149,1032,154),radius=2,fill=accent)
+    _panel(draw,(48,178,1032,405))
+    for index,(label,value) in enumerate(metrics[:6]):
+        x=76+(index%3)*320
+        y=205+(index//3)*103
+        _metric(draw,x,y,label,f"{value:,}" if isinstance(value,int) else value,accent,270)
+    _panel(draw,(48,429,1032,690))
+    draw.text((75,454),"HIGHLIGHTS",font=_font(17),fill=accent)
+    for index,(label,value) in enumerate(leaders[:5]):
+        y=495+index*38
+        draw.text((75,y),_short(draw,label.upper(),_font(15),215),font=_font(15),fill=MUTED)
+        draw.text((310,y-2),_short(draw,value,_font(20),690),font=_font(20),fill=WHITE)
+    output=BytesIO()
+    image.save(output,format="PNG",optimize=True)
+    output.seek(0)
+    return output
