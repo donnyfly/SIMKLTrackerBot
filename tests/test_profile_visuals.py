@@ -6,7 +6,7 @@ import tempfile
 from PIL import Image
 
 import storage as storage_module
-from level_visuals import accent_for_level, prestige_style, render_prestige_gif
+from level_visuals import accent_for_level, accent_for_tier, prestige_style, render_prestige_gif
 from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
 from progression import xp_for_level
 
@@ -30,6 +30,17 @@ def test_profile_recomputes_watch_and_genre_totals_each_view():
     assert second["achievements"]==1
     assert second["top_genres"]==[("Drama",6)]
     assert first_image.getvalue()!=render_profile_png("Viewer",second).getvalue()
+
+
+def test_prestige_profile_uses_rank_accent_and_distinct_backdrop():
+    stats={"episodes_watched":1,"movies_watched":0,"titles":{},"watch_dates":{}}
+    cards=[]
+    for prestige in (1,2,3,6):
+        snapshot=profile_snapshot(stats,{"xp":xp_for_level(43),"prestige":prestige}, {},0,0,today=date(2026,9,26))
+        card=Image.open(render_profile_png("Viewer",snapshot)).convert("RGB")
+        assert card.getpixel((250,117))==accent_for_tier(43,prestige)
+        cards.append(card.tobytes())
+    assert len(set(cards))==4
 
 
 def test_empty_genre_state_and_leaderboard_card():

@@ -41,6 +41,23 @@ _RANK_COLORS = (
 )
 _RANK_ACCENTS = {name: color for (_, name), color in zip(RANKS, _RANK_COLORS)}
 
+# A full ten-rank color wheel for every prestige. The starting point advances
+# by two colors per tier: P1 begins orange, P2 pink, P3 purple, and so on.
+# Colors repeat after five tiers while the numbered prestige emblems remain
+# distinct. Keeping the wheel explicit makes previews and profile cards match.
+_PRESTIGE_RANK_COLORS = (
+    (255, 142, 74),   # bright orange
+    (255, 105, 112),  # electric coral
+    (255, 85, 181),   # neon pink
+    (225, 83, 220),  # magenta
+    (153, 98, 246),  # deep purple
+    (109, 115, 255), # indigo
+    (82, 168, 255),  # electric blue
+    (51, 218, 221),  # turquoise
+    (71, 224, 154),  # emerald
+    (255, 209, 100), # luminous gold
+)
+
 # Prestiges begin beyond the rank palette: pale, luminous finishes rather
 # than another saturated rainbow. Later cycles vary their hue while retaining
 # the premium finish and the numbered emblem.
@@ -57,6 +74,63 @@ _PRESTIGE_FINISHES = (
 def accent_for_level(level: int) -> tuple[int, int, int]:
     """Return the shared accent of the rank containing this level."""
     return _RANK_ACCENTS[rank_for_level(level)]
+
+
+def accent_for_tier(level: int, prestige: int = 0) -> tuple[int, int, int]:
+    """Return a rank accent from the selected prestige's rotating palette."""
+    prestige=max(0,int(prestige))
+    if prestige == 0:
+        return accent_for_level(level)
+    rank_index=sum(int(level) >= minimum for minimum,_ in RANKS)-1
+    return _PRESTIGE_RANK_COLORS[((prestige-1)*2 + max(0,rank_index)) % len(_PRESTIGE_RANK_COLORS)]
+
+
+def draw_prestige_backdrop(draw: ImageDraw.ImageDraw, box, accent, prestige: int):
+    """Add a quiet, prestige-specific geometric backdrop behind card content."""
+    left,top,right,bottom=box
+    width,height=right-left,bottom-top
+    dark=_mix(_PANEL,accent,0.08)
+    glow=_mix(_PANEL,accent,0.18)
+    motif=(max(1,int(prestige))-1)%6
+    # Geometric marks stay in the corners and never obscure card labels.
+    if motif == 0:  # rising rays
+        for offset in range(0,width,42):
+            x=left+offset
+            draw.line((x,bottom-3,min(right-3,x+height//2),top+3),fill=dark,width=2)
+        draw.arc((right-205,top+8,right-11,min(bottom-8,top+202)),0,310,fill=glow,width=3)
+    elif motif == 1:  # nested diamonds
+        for radius in (42,76,110):
+            cx,cy=right-120,top+height//2
+            draw.line(((cx,cy-radius),(cx+radius,cy),(cx,cy+radius),(cx-radius,cy),(cx,cy-radius)),fill=glow,width=2)
+        for offset in range(0,width,78):
+            draw.line((left+offset,top+4,left+offset+35,top+4),fill=dark,width=3)
+    elif motif == 2:  # constellation arcs
+        for radius in (52,87,122):
+            cx,cy=right-130,top+height//2
+            draw.arc((cx-radius,cy-radius,cx+radius,cy+radius),200,350,fill=glow,width=2)
+        for offset in range(24,width-15,65):
+            draw.ellipse((left+offset,top+18,left+offset+4,top+22),fill=dark)
+    elif motif == 3:  # orbit paths
+        cx,cy=right-135,top+height//2
+        for radius in (35,65,95):
+            draw.ellipse((cx-radius,cy-radius//2,cx+radius,cy+radius//2),outline=glow,width=2)
+        draw.line((left+16,top+height//2,right-242,top+height//2),fill=dark,width=2)
+    elif motif == 4:  # shield facets
+        cx,cy=right-132,top+height//2
+        for radius in (52,88):
+            draw.line(((cx-radius,cy-radius//2),(cx,cy-radius),(cx+radius,cy-radius//2),
+                       (cx+radius-15,cy+radius//2),(cx,cy+radius),(cx-radius+15,cy+radius//2),
+                       (cx-radius,cy-radius//2)),fill=glow,width=2)
+        for offset in range(0,width,62):
+            draw.line((left+offset,bottom-8,left+offset+24,bottom-8),fill=dark,width=2)
+    else:  # sunburst
+        cx,cy=right-125,top+height//2
+        for index in range(12):
+            angle=index*math.pi/6
+            x1,y1=cx+round(math.cos(angle)*48),cy+round(math.sin(angle)*48)
+            x2,y2=cx+round(math.cos(angle)*100),cy+round(math.sin(angle)*100)
+            draw.line((x1,y1,x2,y2),fill=glow,width=2)
+        draw.ellipse((cx-30,cy-30,cx+30,cy+30),outline=glow,width=3)
 
 
 def prestige_style(prestige: int) -> tuple[tuple[int, int, int], int]:
@@ -134,7 +208,7 @@ def render_prestige_gif(prestige: int) -> BytesIO:
         draw.text((230,58),"PRESTIGE UNLOCKED",font=_font(18),fill=accent)
         draw.text((230,82),str(prestige),font=_font(78),fill=_mix(_MUTED,_TEXT,reveal))
         draw.text((234,180),"A NEW CHAPTER",font=_font(26),fill=_TEXT)
-        draw.text((234,212),"LEVEL RESET TO 1",font=_font(15),fill=accent)
+        draw.text((234,212),"XP CARRIES FORWARD",font=_font(15),fill=accent)
         frames.append(image)
     output=BytesIO()
     frames[0].save(output,format="GIF",save_all=True,append_images=frames[1:],duration=DURATION_MS,loop=0,optimize=True,disposal=2)
@@ -176,8 +250,8 @@ def render_level_up_gif(
     rank = str(rank or "Newcomer")
     rank_up = bool(previous_rank and previous_rank != rank)
     prestige = max(0, int(prestige))
-    previous_accent = accent_for_level(previous_level)
-    next_accent = accent_for_level(level)
+    previous_accent = accent_for_tier(previous_level,prestige)
+    next_accent = accent_for_tier(level,prestige)
     prestige_accent, prestige_emblem = prestige_style(prestige) if prestige else (None, None)
 
     frames: list[Image.Image] = []
@@ -199,6 +273,8 @@ def render_level_up_gif(
         # Quiet panel with a thin animated signal line.
         border=_mix(_LINE,prestige_accent,0.35) if prestige_accent else _LINE
         draw.rounded_rectangle((22, 22, WIDTH - 22, HEIGHT - 22), radius=24, fill=_PANEL, outline=border, width=1)
+        if prestige:
+            draw_prestige_backdrop(draw,(27,27,WIDTH-27,HEIGHT-27),accent,prestige)
         # Give the signal sweep its own footer lane so it never crosses labels.
         line_y = HEIGHT - 35
         line_end = 48 + int((WIDTH - 96) * reveal)

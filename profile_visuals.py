@@ -7,7 +7,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 from achievements import ACHIEVEMENTS
-from level_visuals import accent_for_level, prestige_style
+from level_visuals import accent_for_tier, draw_prestige_backdrop, prestige_style
 from progression import level_progress, rank_for_level
 
 BG=(12,14,20)
@@ -90,13 +90,27 @@ def render_profile_png(name, data):
     width,height=1080,1065
     image=Image.new("RGB",(width,height),BG)
     draw=ImageDraw.Draw(image)
-    accent=prestige_style(data["prestige"])[0] if data["prestige"] else accent_for_level(data["level"])
+    prestige=int(data["prestige"])
+    accent=accent_for_tier(data["level"],prestige)
+    if prestige:
+        # A clipped motif behind the header marks the prestige while keeping
+        # the statistics panels and their small labels on a solid dark surface.
+        header=Image.new("RGB",(984,108),tuple(round(b*0.85+a*0.15) for b,a in zip(BG,accent)))
+        header_draw=ImageDraw.Draw(header)
+        draw_prestige_backdrop(header_draw,(0,0,984,108),accent,prestige)
+        mask=Image.new("L",header.size,0)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,983,107),radius=20,fill=255)
+        image.paste(header,(48,24),mask)
+        draw=ImageDraw.Draw(image)
     draw.text((48,36),"SIMKL / PROFILE",font=_font(19),fill=accent)
     draw.text((48,67),_short(draw,name,_font(37),820),font=_font(37),fill=WHITE)
-    draw.text((930,72),f"P{data['prestige']}",font=_font(31),fill=accent)
+    draw.text((930,72),f"P{prestige}",font=_font(31),fill=prestige_style(prestige)[0] if prestige else accent)
     draw.rounded_rectangle((48,115,1032,120),radius=2,fill=accent)
 
     _panel(draw,(48,144,1032,320))
+    if prestige:
+        draw.rounded_rectangle((49,145,54,319),radius=2,fill=accent)
+        draw.arc((815,153,1020,310),190,350,fill=tuple(round(x*0.8+y*0.2) for x,y in zip(PANEL,accent)),width=2)
     draw.text((75,169),f"LEVEL {data['level']}",font=_font(52),fill=WHITE)
     draw.text((75,238),_short(draw,data["rank"],_font(27),460),font=_font(27),fill=accent)
     draw.text((617,172),"CURRENT XP",font=_font(16),fill=MUTED)

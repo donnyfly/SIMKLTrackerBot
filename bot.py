@@ -10,7 +10,7 @@ from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
 from progression import RANKS, challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
-from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif, render_prestige_gif
+from level_visuals import accent_for_tier, prestige_style, render_achievement_gif, render_level_up_gif, render_prestige_gif
 from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
 from community import community_week
 from tmdb_client import TmdbClient
@@ -1505,7 +1505,7 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
     embed = discord.Embed(
         title=title,
         description=description,
-        color=discord.Color.from_rgb(*(prestige_style(int(after_progression.get("prestige",0)))[0] if int(after_progression.get("prestige",0)) else accent_for_level(after_level))),
+        color=discord.Color.from_rgb(*accent_for_tier(after_level,after_prestige)),
     )
     embed.set_footer(text="SIMKL Tracker · Progression")
     send = preview_interaction.followup.send if preview_interaction else channel.send
@@ -2079,7 +2079,7 @@ async def show_profile(i,user):
         description=(f"Level **{data['level']}** · **{data['rank']}** · Prestige **{data['prestige']}**\n"
                      f"**{data['xp']:,} XP** · **{data['total']:,} watches** · "
                      f"**{data['achievements']}/{data['achievement_total']} achievements**"),
-        color=discord.Color.from_rgb(*(prestige_style(data["prestige"])[0] if data["prestige"] else accent_for_level(data["level"]))),
+        color=discord.Color.from_rgb(*accent_for_tier(data["level"],data["prestige"])),
     )
     try:
         image=await asyncio.to_thread(render_profile_png,target.display_name,data)

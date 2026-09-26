@@ -16,7 +16,7 @@ os.environ.setdefault("TMDB_API_KEY", "test-key")
 import bot  # noqa: E402
 import storage as storage_module  # noqa: E402
 from achievements import ACHIEVEMENTS  # noqa: E402
-from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif  # noqa: E402
+from level_visuals import accent_for_level, accent_for_tier, prestige_style, render_achievement_gif, render_level_up_gif  # noqa: E402
 from progression import RANKS, rank_for_level  # noqa: E402
 from simkl_client import SimklClient  # noqa: E402
 
@@ -75,6 +75,23 @@ def test_level_animation_uses_each_rank_color():
     assert len(set(footer_colors)) == 4
 
 
+def test_each_prestige_has_a_rotating_ten_rank_palette():
+    for prestige in (1,2,3,6):
+        accents=[accent_for_tier(minimum,prestige) for minimum,_ in RANKS]
+        assert len(set(accents))==len(RANKS)
+        for (minimum,_),color in zip(RANKS,accents):
+            assert accent_for_tier(minimum+1,prestige)==color
+    assert accent_for_tier(1,1)==(255,142,74)  # orange
+    assert accent_for_tier(1,2)==(255,85,181)  # pink
+    assert accent_for_tier(1,3)==(153,98,246) # purple
+    assert accent_for_tier(40,1)!=accent_for_tier(40,2)
+    assert accent_for_tier(40,1)==accent_for_tier(40,6)
+    assert accent_for_tier(40,0)==accent_for_level(40)
+    first=render_level_up_gif(40,rank_for_level(40),previous_level=39,previous_rank=rank_for_level(39),prestige=1)
+    second=render_level_up_gif(40,rank_for_level(40),previous_level=39,previous_rank=rank_for_level(39),prestige=2)
+    assert first.getvalue()!=second.getvalue()
+
+
 def test_debug_previews_are_private_and_do_not_write(monkeypatch):
     async def scenario():
         command=bot.bot.tree.get_command("simkl-debug")
@@ -114,7 +131,7 @@ def test_debug_previews_are_private_and_do_not_write(monkeypatch):
         sent=selected.followup.send.await_args.kwargs
         assert "Prestige **6**" in sent["embed"].description
         assert "Level 43" in sent["embed"].description
-        assert sent["embed"].color.value == int.from_bytes(bytes(prestige_style(6)[0]),"big")
+        assert sent["embed"].color.value == int.from_bytes(bytes(accent_for_tier(43,6)),"big")
         prestige=_interaction()
         await command.callback(prestige, app_commands.Choice(name="Prestige unlocked",value="prestige"), prestige=3)
         prestige.response.defer.assert_awaited_once_with(ephemeral=True)
