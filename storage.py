@@ -633,6 +633,68 @@ class Storage:
         await self.flush()
         return {"awarded": True, "amount": xp, "progression": result}
 
+    async def reconcile_watch_xp(self, discord_user_id: str, active_watch_bases: set[str], media_types: set[str]) -> dict:
+        """Remove watch XP for media items that no longer exist in SIMKL watch history.
+
+        active_watch_bases contains the stable item prefix for each currently
+        watched episode/movie. Rewatch events intentionally share the same
+        base, so removing an item revokes all XP earned from that item while
+        keeping valid rewatch XP for items that remain in SIMKL history.
+        """
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return {"removed": False, "amount": 0, "events": 0, "progression": {}}
+
+            progression = user["progression"]
+            xp_events = progression.get("xp_events", [])
+            removed_keys = set()
+            removed_amount = 0
+
+            def event_base(event_key: str) -> str | None:
+                if not isinstance(event_key, str):
+                    return None
+                for prefix in ("episode:", "anime_episode:", "movie:", "anime_movie:"):
+                    if event_key.startswith(prefix) and len(event_key) > 20 and event_key[-20:-19] == ":":
+                        return event_key[:-20]
+                return None
+
+            kept_events = []
+            for event in xp_events:
+                media_type = event.get("media_type")
+                event_key = event.get("event_key")
+                if media_type not in media_types:
+                    kept_events.append(event)
+                    continue
+                base = event_base(event_key)
+                if base is None or base in active_watch_bases:
+                    kept_events.append(event)
+                    continue
+                removed_keys.add(event_key)
+                removed_amount += max(0, int(event.get("amount", 0)))
+
+            if not removed_keys:
+                return {"removed": False, "amount": 0, "events": 0, "progression": copy.deepcopy(progression)}
+
+            progression["xp_events"] = kept_events
+            progression["watch_xp_keys"] = {
+                key: stamp
+                for key, stamp in progression.get("watch_xp_keys", {}).items()
+                if key not in removed_keys
+            }
+            progression["xp"] = max(0, int(progression.get("xp", 0)) - removed_amount)
+            progression["lifetime_xp"] = max(0, int(progression.get("lifetime_xp", 0)) - removed_amount)
+            self._dirty = True
+            result = copy.deepcopy(progression)
+
+        await self.flush()
+        return {
+            "removed": True,
+            "amount": removed_amount,
+            "events": len(removed_keys),
+            "progression": result,
+        }
+
     async def complete_challenge(self, discord_user_id: str, challenge_id: str, period_key: str, amount: int) -> bool:
         async with _lock:
             user = self._user(discord_user_id)
