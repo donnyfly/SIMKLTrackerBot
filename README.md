@@ -104,7 +104,7 @@ Available commands:
 - `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, anime, XP progression, level, or prestige. Each row shows prestige, level, current XP, and total watches.
 
 Profiles and leaderboards render from the latest locally recorded polling data; opening them does not make a new SIMKL API request. Historical title records lack genre metadata, so top genres appear as "No genre data yet" until SIMKL supplies genre tags for subsequently recorded watches.
-The profile and leaderboard images are sent as normal image attachments, which Discord can show larger than an image inside an embed. The final inline size still depends on the Discord client and the viewer's window width; users can open the attachment to see its full resolution.
+The profile and leaderboard images are displayed inside Discord embeds. Their inline size depends on the Discord client and the viewer's window width; open the image to see its full resolution. Watch totals are reconciled against current SIMKL history when activity changes, on `/simkl-checknow`, and at least daily during polling. Existing aggregate-only statistics are rebuilt from current SIMKL history once; earlier rewatches that SIMKL no longer lists individually cannot be recovered from that snapshot.
 
 ### Embed customization
 

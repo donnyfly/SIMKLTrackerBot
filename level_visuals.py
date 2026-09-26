@@ -224,9 +224,10 @@ def render_level_up_gif(
         if prestige:
             badge=f"PRESTIGE {prestige}"
             width=draw.textbbox((0,0),badge,font=small_font)[2]
-            draw.text((WIDTH - 52 - width, 60), badge, font=small_font, fill=prestige_accent)
-            draw.ellipse((620,113,678,171),fill=_mix(_PANEL,prestige_accent,0.8))
-            _prestige_emblem(draw,649,142,prestige_emblem)
+            badge_center=610
+            draw.text((badge_center-width/2,60), badge, font=small_font, fill=prestige_accent)
+            draw.ellipse((badge_center-29,113,badge_center+29,171),fill=_mix(_PANEL,prestige_accent,0.8))
+            _prestige_emblem(draw,badge_center,142,prestige_emblem)
 
         displayed_level = previous_level if t < 0.18 else level
         level_color = _mix(_MUTED, _TEXT, reveal)

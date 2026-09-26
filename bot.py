@@ -759,13 +759,23 @@ def watch_xp_base_key(media_type, media_key):
     return None
 
 
-async def reconcile_watch_progression(uid, u, token, changed_types, request_cache=None):
-    """Reconcile watch XP against the current SIMKL history for changed media types."""
+async def reconcile_watch_progression(g, uid, u, token, changed_types, request_cache=None):
+    """Reconcile watch XP and per-server totals with current SIMKL history."""
     if not changed_types:
         return token, 0
 
+    legacy_statistics=await storage.needs_watch_statistics_rebuild(g,uid)
+    if legacy_statistics:
+        # Old aggregate counters have no per-item identities. Rebuild them once
+        # from all three catalogs so a partial media update cannot erase them.
+        changed_types=set(MEDIA_TYPES)
+    elif {"movies","anime"} & set(changed_types):
+        # Anime films can appear in either SIMKL catalog. Compare both before
+        # deleting one or a partial catalog response could revoke valid watches.
+        changed_types=set(changed_types) | {"movies","anime"}
     active_watch_bases=set()
     media_types=set()
+    baseline_entries=[]
 
     for t in changed_types:
         if t == "movies":
@@ -799,6 +809,10 @@ async def reconcile_watch_progression(uid, u, token, changed_types, request_cach
                 base=watch_xp_base_key(media_type, f"movies:{sid}")
                 if base:
                     active_watch_bases.add(base)
+                if legacy_statistics:
+                    baseline_entries.append({"media_type":media_type,"item_key":f"movies:{sid}",
+                                             "title":movie.get("title") or "Untitled","watched_at":item["last_watched_at"],
+                                             "genres":movie.get("genres") or item.get("genres") or []})
                 media_types.add(media_type)
             continue
 
@@ -815,6 +829,10 @@ async def reconcile_watch_progression(uid, u, token, changed_types, request_cach
             base=watch_xp_base_key("anime_movie", f"movies:{sid}")
             if base:
                 active_watch_bases.add(base)
+            if legacy_statistics:
+                baseline_entries.append({"media_type":"anime_movie","item_key":f"movies:{sid}",
+                                         "title":movie.get("title") or "Untitled","watched_at":item["last_watched_at"],
+                                         "genres":movie.get("genres") or item.get("genres") or []})
             media_types.add("anime_movie")
 
         media_type="anime_episode" if t == "anime" else "episode"
@@ -827,8 +845,20 @@ async def reconcile_watch_progression(uid, u, token, changed_types, request_cach
             )
             if base:
                 active_watch_bases.add(base)
+            if legacy_statistics:
+                baseline_entries.append({"media_type":media_type,
+                                         "item_key":f"series:{t}:{episode['simkl_id']}:{episode['season_num']}:{episode['episode_number']}",
+                                         "title":episode.get("show_title") or "Untitled",
+                                         "watched_at":episode["watched_raw"],"genres":episode.get("genres") or []})
 
     result=await storage.reconcile_watch_xp(uid, active_watch_bases, media_types)
+    removed_watches=await storage.reconcile_watch_statistics(
+        g,uid,active_watch_bases,media_types,
+        baseline_entries=baseline_entries if legacy_statistics else None,
+        full_snapshot=set(changed_types)==set(MEDIA_TYPES),
+    )
+    if removed_watches:
+        log.info("Reconciled SIMKL watch statistics for user %s in guild %s: %d fewer watches.",uid,g,removed_watches)
     removed=int(result.get("amount", 0))
     if removed:
         log.info(
@@ -1024,12 +1054,16 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
     changed_types=set()
+    last_statistics_reconcile=await storage.get_statistics_reconcile_time(g,uid)
+    periodic_reconcile=(not last_statistics_reconcile or
+                        datetime.now(timezone.utc)-parse_iso(last_statistics_reconcile)>=timedelta(days=1))
     for t in MEDIA_TYPES:
         stamp=(activities.get(ACTIVITY_KEYS[t]) or {}).get("all")
-        if force_reconcile or (stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO))):
+        if force_reconcile or periodic_reconcile or (stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO))):
             changed_types.add(t)
     try:
         token,removed_xp=await reconcile_watch_progression(
+            g,
             uid,
             u,
             token,
@@ -2042,9 +2076,7 @@ async def show_profile(i,user):
     try:
         image=await asyncio.to_thread(render_profile_png,target.display_name,data)
         embed.set_image(url="attachment://profile.png")
-        await i.followup.send(content=(f"**{target.display_name}'s SIMKL stats** · P{data['prestige']} L{data['level']} "
-                                       f"· {data['xp']:,} XP · {data['total']:,} watches"),
-                              file=discord.File(image,filename="profile.png"))
+        await i.followup.send(embed=embed,file=discord.File(image,filename="profile.png"))
     except Exception:
         log.exception("Could not send profile image for %s; sending embed fallback.",target.id)
         embed.set_image(url=None)
@@ -2114,7 +2146,7 @@ async def simkl_leaderboard(i,category: app_commands.Choice[str] | None = None):
     try:
         image=await asyncio.to_thread(render_leaderboard_png,i.guild.name,labels[category],values[:10])
         embed.set_image(url="attachment://leaderboard.png")
-        await i.followup.send(content=f"**{i.guild.name} · {labels[category]}** · Top 10",file=discord.File(image,filename="leaderboard.png"))
+        await i.followup.send(embed=embed,file=discord.File(image,filename="leaderboard.png"))
     except Exception:
         log.exception("Could not send leaderboard image for guild %s; sending embed fallback.",g)
         embed.set_image(url=None)

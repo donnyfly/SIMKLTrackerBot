@@ -117,7 +117,67 @@ def _default_statistics() -> dict:
         "anime_movies_watched": 0,
         "watch_dates": {},
         "titles": {},
+        "watch_events": {},
     }
+
+
+def _watch_event_id(event: dict) -> str:
+    return f"{event['media_type']}:{event['item_key']}:{event['watched_at']}"
+
+
+def _watch_base(event: dict) -> str:
+    return f"{event['media_type']}:{event['item_key']}:"
+
+
+def _genre_names(genres) -> list[str]:
+    values=[genres] if isinstance(genres,(str,dict)) else (genres or [])
+    names=[]
+    for value in values:
+        name=value.get("name") if isinstance(value,dict) else value
+        if isinstance(name,str) and name.strip():
+            names.append(name.strip().title())
+    return sorted(set(names))
+
+
+def _rebuild_watch_statistics(events: dict, timezone_name: str | None) -> dict:
+    stats=_default_statistics()
+    stats["watch_events"]=events
+    tz=_resolve_timezone(timezone_name)
+    for event in events.values():
+        media_type=event["media_type"]
+        if media_type not in {"episode","anime_episode","movie","anime_movie"}:
+            continue
+        category=("anime_episodes" if media_type=="anime_episode" else
+                  "anime_movies" if media_type=="anime_movie" else
+                  "episodes" if media_type=="episode" else "movies")
+        counter="episodes_watched" if "episode" in media_type else "movies_watched"
+        stats[counter]+=1
+        if media_type.startswith("anime_"):
+            stats["anime_"+counter]+=1
+        stamp=event.get("watched_at")
+        if stamp:
+            try:
+                watched=datetime.fromisoformat(str(stamp).replace("Z","+00:00"))
+                if watched.tzinfo is None:
+                    watched=watched.replace(tzinfo=timezone.utc)
+                day=watched.astimezone(tz).date().isoformat()
+            except (TypeError,ValueError):
+                day=str(stamp)[:10]
+            if day:
+                daily=stats["watch_dates"].setdefault(day,{})
+                daily[category]=int(daily.get(category,0))+1
+                daily["total"]=int(daily.get("total",0))+1
+        item_key=event["item_key"]
+        title=stats["titles"].setdefault(item_key,{
+            "title":event.get("title") or "Untitled", "type":media_type,
+            "count":0,"last_watched":None,
+        })
+        title["count"]+=1
+        if not title["last_watched"] or str(stamp or "")>str(title["last_watched"]):
+            title["last_watched"]=stamp
+        if event.get("genres"):
+            title["genres"]=event["genres"]
+    return stats
 
 
 def _default_activity_state() -> dict:
@@ -214,11 +274,13 @@ def _normalise_guild_user(user: dict) -> None:
         stats = _default_statistics()
         user["statistics"] = stats
     for key, default in _default_statistics().items():
-        stats.setdefault(key, copy.deepcopy(default))
+        stats.setdefault(key, None if key == "watch_events" else copy.deepcopy(default))
     if not isinstance(stats.get("watch_dates"), dict):
         stats["watch_dates"] = {}
     if not isinstance(stats.get("titles"), dict):
         stats["titles"] = {}
+    if stats.get("watch_events") is not None and not isinstance(stats["watch_events"], dict):
+        stats["watch_events"] = None
     achievements = user.get("achievements")
     if not isinstance(achievements, dict):
         user["achievements"] = {}
@@ -897,6 +959,60 @@ class Storage:
         await self.flush()
         return {"awarded": True, "amount": xp, "progression": result}
 
+    async def needs_watch_statistics_rebuild(self, guild_id: str | int, discord_user_id: str) -> bool:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user=self._guild_user(guild_id,discord_user_id)
+            return bool(user and user["statistics"].get("watch_events") is None)
+
+    async def reconcile_watch_statistics(
+        self, guild_id: str | int, discord_user_id: str,
+        active_watch_bases: set[str], media_types: set[str],
+        baseline_entries: list[dict] | None = None,
+        full_snapshot: bool = False,
+    ) -> int:
+        """Remove absent watches, or bootstrap old aggregate-only data from SIMKL."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user=self._guild_user(guild_id,discord_user_id)
+            if not user:
+                return 0
+            stats=user["statistics"]
+            events=stats.get("watch_events")
+            if events is None:
+                if baseline_entries is None:
+                    raise ValueError("Legacy statistics require a complete SIMKL history snapshot")
+                old_titles=stats.get("titles") or {}
+                events={}
+                for entry in baseline_entries:
+                    entry=copy.deepcopy(entry)
+                    prior=old_titles.get(entry["item_key"]) or {}
+                    entry["title"]=prior.get("title") or entry.get("title") or "Untitled"
+                    entry["genres"]=_genre_names(prior.get("genres") or entry.get("genres"))
+                    events[_watch_event_id(entry)]=entry
+            else:
+                events={key:event for key,event in events.items()
+                        if event.get("media_type") not in media_types or _watch_base(event) in active_watch_bases}
+            if events != stats.get("watch_events"):
+                previous=int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))
+                guild=self._guild(guild_id)
+                user["statistics"]=_rebuild_watch_statistics(events,guild.get("timezone") if guild else None)
+                self._dirty=True
+                difference=previous-(user["statistics"]["episodes_watched"]+user["statistics"]["movies_watched"])
+            else:
+                difference=0
+            if full_snapshot:
+                user["last_statistics_reconciled_at"]=datetime.now(timezone.utc).isoformat()
+                self._dirty=True
+        await self.flush()
+        return difference
+
+    async def get_statistics_reconcile_time(self, guild_id: str | int, discord_user_id: str) -> str | None:
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            user=self._guild_user(guild_id,discord_user_id)
+            return user.get("last_statistics_reconciled_at") if user else None
+
     async def record_watch(
         self,
         guild_id: str | int,
@@ -914,6 +1030,14 @@ class Storage:
             if not user:
                 return
             stats = user["statistics"]
+            event={"media_type":media_type,"title":title or "Untitled","item_key":item_key,"watched_at":watched_at}
+            if genres:
+                event["genres"]=_genre_names(genres)
+            if isinstance(stats.get("watch_events"),dict):
+                event_id=_watch_event_id(event)
+                if event_id in stats["watch_events"]:
+                    return
+                stats["watch_events"][event_id]=event
             if media_type == "anime_episode":
                 stats["episodes_watched"] += 1
                 stats["anime_episodes_watched"] += 1

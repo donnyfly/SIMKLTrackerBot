@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,6 +14,7 @@ os.environ.setdefault("SIMKL_CLIENT_ID", "test-client")
 os.environ.setdefault("TMDB_API_KEY", "test-key")
 
 import bot  # noqa: E402
+import storage as storage_module  # noqa: E402
 from achievements import ACHIEVEMENTS  # noqa: E402
 from level_visuals import accent_for_level, prestige_style, render_achievement_gif, render_level_up_gif  # noqa: E402
 from progression import RANKS, rank_for_level  # noqa: E402
@@ -122,6 +124,40 @@ def test_achievement_notification_falls_back_to_embed(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_simkl_reconciliation_updates_existing_stats_and_xp(monkeypatch):
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            monkeypatch.setattr(storage_module,"DATA_PATH",f"{directory}/store.json")
+            store=storage_module.Storage()
+            monkeypatch.setattr(bot,"storage",store)
+            await store.link_user("123","42","token",None,"tester","2026-09-20T00:00:00Z")
+            for number in (1,2):
+                key=f"series:shows:99:1:{number}"
+                stamp=f"2026-09-2{number}T10:00:00Z"
+                await store.record_watch("123","42","episode","Series",key,stamp)
+                await store.award_watch_xp("42",f"episode:{key}:{stamp}","episode","Series",stamp,100)
+            stats=store._data["guilds"]["123"]["users"]["42"]["statistics"]
+            stats.pop("watch_events")  # Existing installations only had aggregate counts.
+
+            def episode(number):
+                return {"show":{"title":"Series","ids":{"simkl":99}},"seasons":[
+                    {"number":1,"episodes":[{"number":number,"watched_at":f"2026-09-2{number}T10:00:00Z"}]}
+                ]}
+
+            current=[episode(2)]
+            async def fetch(uid,user,token,media_type,**kwargs):
+                return (current if media_type=="shows" else []),token
+            monkeypatch.setattr(bot,"cached_simkl_items",fetch)
+            await bot.reconcile_watch_progression("123","42",{},"token",{"shows"})
+            assert (await store.get_statistics("123","42"))["episodes_watched"]==1
+            assert (await store.get_progression("42"))["xp"]==100
+            current.clear()
+            await bot.reconcile_watch_progression("123","42",{},"token",{"shows"})
+            assert (await store.get_statistics("123","42"))["episodes_watched"]==0
+            assert (await store.get_progression("42"))["xp"]==0
+    asyncio.run(scenario())
+
+
 def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
     async def scenario():
         rows=[
@@ -144,7 +180,7 @@ def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
         assert captured==["3","2","1"]
         interaction.response.defer.assert_awaited_once()
         assert interaction.followup.send.await_args.kwargs["file"].filename=="leaderboard.png"
-        assert "embed" not in interaction.followup.send.await_args.kwargs
+        assert interaction.followup.send.await_args.kwargs["embed"].image.url=="attachment://leaderboard.png"
         assert bot.bot.tree.get_command("simkl-xp-leaderboard") is None
         assert bot.bot.tree.get_command("simkl-xp") is None
         assert bot.bot.tree.get_command("simkl-profile") is None
