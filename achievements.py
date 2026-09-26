@@ -11,6 +11,7 @@ ACHIEVEMENTS = {
         "description": "Record your first watch.",
         "category": "total",
         "threshold": 1,
+        "xp": 100,
     },
     "episodes_50": {
         "name": "Seasoned Watcher",
@@ -18,6 +19,7 @@ ACHIEVEMENTS = {
         "description": "Watch 50 episodes.",
         "category": "episodes",
         "threshold": 50,
+        "xp": 250,
     },
     "episodes_250": {
         "name": "Binge Master",
@@ -25,6 +27,7 @@ ACHIEVEMENTS = {
         "description": "Watch 250 episodes.",
         "category": "episodes",
         "threshold": 250,
+        "xp": 500,
     },
     "episodes_1000": {
         "name": "Episode Veteran",
@@ -32,6 +35,7 @@ ACHIEVEMENTS = {
         "description": "Watch 1,000 episodes.",
         "category": "episodes",
         "threshold": 1000,
+        "xp": 1000,
     },
     "episodes_2500": {
         "name": "Episode Legend",
@@ -39,6 +43,7 @@ ACHIEVEMENTS = {
         "description": "Watch 2,500 episodes.",
         "category": "episodes",
         "threshold": 2500,
+        "xp": 2000,
     },
     "movies_25": {
         "name": "Movie Regular",
@@ -46,6 +51,7 @@ ACHIEVEMENTS = {
         "description": "Watch 25 movies.",
         "category": "movies",
         "threshold": 25,
+        "xp": 250,
     },
     "movies_100": {
         "name": "Movie Buff",
@@ -53,6 +59,7 @@ ACHIEVEMENTS = {
         "description": "Watch 100 movies.",
         "category": "movies",
         "threshold": 100,
+        "xp": 500,
     },
     "movies_250": {
         "name": "Cinephile",
@@ -60,6 +67,7 @@ ACHIEVEMENTS = {
         "description": "Watch 250 movies.",
         "category": "movies",
         "threshold": 250,
+        "xp": 1000,
     },
     "anime_250": {
         "name": "Anime Devotee",
@@ -67,6 +75,7 @@ ACHIEVEMENTS = {
         "description": "Watch 250 anime episodes.",
         "category": "anime_episodes",
         "threshold": 250,
+        "xp": 500,
     },
     "anime_1000": {
         "name": "Anime Veteran",
@@ -74,6 +83,7 @@ ACHIEVEMENTS = {
         "description": "Watch 1,000 anime episodes.",
         "category": "anime_episodes",
         "threshold": 1000,
+        "xp": 1000,
     },
     "anime_2500": {
         "name": "Anime Legend",
@@ -81,6 +91,7 @@ ACHIEVEMENTS = {
         "description": "Watch 2,500 anime episodes.",
         "category": "anime_episodes",
         "threshold": 2500,
+        "xp": 2000,
     },
     "total_250": {
         "name": "Dedicated Watcher",
@@ -88,6 +99,7 @@ ACHIEVEMENTS = {
         "description": "Watch 250 total items.",
         "category": "total",
         "threshold": 250,
+        "xp": 250,
     },
     "total_1000": {
         "name": "Committed Watcher",
@@ -95,6 +107,7 @@ ACHIEVEMENTS = {
         "description": "Watch 1,000 total items.",
         "category": "total",
         "threshold": 1000,
+        "xp": 750,
     },
     "total_2500": {
         "name": "Elite Watcher",
@@ -102,6 +115,7 @@ ACHIEVEMENTS = {
         "description": "Watch 2,500 total items.",
         "category": "total",
         "threshold": 2500,
+        "xp": 1500,
     },
     "total_5000": {
         "name": "Legendary",
@@ -109,6 +123,7 @@ ACHIEVEMENTS = {
         "description": "Watch 5,000 total items.",
         "category": "total",
         "threshold": 5000,
+        "xp": 3000,
     },
     "streak_30": {
         "name": "Monthly Dedication",
@@ -116,6 +131,7 @@ ACHIEVEMENTS = {
         "description": "Maintain a 30-day watch streak.",
         "category": "streak",
         "threshold": 30,
+        "xp": 500,
     },
     "streak_100": {
         "name": "Unstoppable",
@@ -123,6 +139,7 @@ ACHIEVEMENTS = {
         "description": "Maintain a 100-day watch streak.",
         "category": "streak",
         "threshold": 100,
+        "xp": 1500,
     },
     "streak_365": {
         "name": "Year-Round Watcher",
@@ -130,6 +147,7 @@ ACHIEVEMENTS = {
         "description": "Maintain a 365-day watch streak.",
         "category": "streak",
         "threshold": 365,
+        "xp": 3000,
     },
 }
 
