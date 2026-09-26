@@ -152,7 +152,7 @@ def _normalise_user(user: dict) -> None:
     user.setdefault("simkl_username", "unknown")
     user.setdefault("simkl_account_id", None)
     user.setdefault("embed_preferences", copy.deepcopy(DEFAULT_EMBED_PREFERENCES))
-    user.setdefault("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}, "history_xp_seeded": False})
+    user.setdefault("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}, "history_xp_seeded": False, "history_xp_notification_sent": False})
     if not isinstance(user["progression"], dict):
         user["progression"] = {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}, "achievement_xp_awarded": {}}
     progression = user["progression"]
@@ -164,6 +164,8 @@ def _normalise_user(user: dict) -> None:
     progression.setdefault("challenge_completions", {})
     progression.setdefault("achievement_xp_awarded", {})
     progression.setdefault("history_xp_seeded", False)
+    progression.setdefault("history_xp_notification_sent", False)
+    progression["history_xp_notification_sent"] = bool(progression.get("history_xp_notification_sent", False))
     if not isinstance(progression["watch_xp_keys"], dict): progression["watch_xp_keys"] = {}
     if not isinstance(progression["xp_events"], list): progression["xp_events"] = []
     if not isinstance(progression["challenge_completions"], dict): progression["challenge_completions"] = {}
@@ -598,6 +600,15 @@ class Storage:
             if not user:
                 return
             user["progression"]["history_xp_seeded"] = True
+            self._dirty = True
+        await self.flush()
+
+    async def mark_history_xp_notification_sent(self, discord_user_id: str) -> None:
+        async with _lock:
+            user = self._user(discord_user_id)
+            if not user:
+                return
+            user["progression"]["history_xp_notification_sent"] = True
             self._dirty = True
         await self.flush()
 
