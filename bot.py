@@ -518,13 +518,20 @@ async def process_shows(ch,g,uid,name,member,t,items,profile):
                     logo=await tmdb.get_tv_logo(anime_tmdb_id) if anime_tmdb_id is not None else None
                 except Exception:
                     log.warning("TMDB TV logo lookup failed for %s.", title, exc_info=True)
+            # Ranged activity optimization:
+            # The first episode supplies the artwork/title for the grouped
+            # notification. The last episode is resolved as a boundary check,
+            # while episodes in between do not need individual TMDB/TVMaze
+            # lookups. Middle episodes fall back to the base episode XP value
+            # when their runtime is not already known.
             runtime_by_key={grp[0]["key"]: episode_runtime}
-            for extra_episode in grp[1:]:
+            if len(grp) > 1:
+                last_episode=grp[-1]
                 try:
-                    _,_,_,extra_runtime=await episode_media(t,extra_episode)
-                    runtime_by_key[extra_episode["key"]]=extra_runtime
+                    _,_,_,last_runtime=await episode_media(t,last_episode)
+                    runtime_by_key[last_episode["key"]]=last_runtime
                 except Exception:
-                    runtime_by_key[extra_episode["key"]]=None
+                    runtime_by_key[last_episode["key"]]=None
 
             e=build_embed(t,desc,max(x["watched_dt"] for x in grp),name,member,image,profile,title,url,fallback,logo,p)
             if not await send_embed(ch,e,"episode"):
