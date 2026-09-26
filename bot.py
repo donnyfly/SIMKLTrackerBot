@@ -1048,19 +1048,36 @@ async def award_watch_progression(uid, event_key, media_type, title, watched_at,
 
 async def notify_level_up(guild_id_value, uid, before_progression, after_progression, channel):
     if channel is None:
-        return
+        log.warning("Level-up notification skipped for user %s: no channel.", uid)
+        return False
     before_level = level_progress(int(before_progression.get("xp", 0)))[0]
     after_level = level_progress(int(after_progression.get("xp", 0)))[0]
+    log.info("Progression check for user %s in guild %s: level %d -> %d (XP %d -> %d).", uid, guild_id_value, before_level, after_level, int(before_progression.get("xp", 0)), int(after_progression.get("xp", 0)))
     if after_level <= before_level:
-        return
+        return False
     guild = bot.get_guild(int(guild_id_value))
     member = guild.get_member(int(uid)) if guild else None
+    if member is None and guild:
+        try:
+            member = await guild.fetch_member(int(uid))
+        except Exception:
+            member = None
     mention = member.mention if member else f"<@{uid}>"
     rank = rank_for_level(after_level)
     try:
-        await channel.send(f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**")
+        await channel.send(
+            f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        log.info("Sent level-up notification for user %s in guild %s: level %d.", uid, guild_id_value, after_level)
+        return True
+    except discord.Forbidden:
+        log.error("Discord denied permission for level-up notification in channel %s (guild %s, user %s). Check Send Messages and channel overrides.", getattr(channel, "id", "unknown"), guild_id_value, uid)
+    except discord.HTTPException as exc:
+        log.error("Discord HTTP error sending level-up notification in channel %s (status=%s): %s", getattr(channel, "id", "unknown"), exc.status, exc)
     except Exception:
-        log.exception("Failed to send level-up notification for user %s in guild %s.", uid, guild_id_value)
+        log.exception("Unexpected failure sending level-up notification for user %s in guild %s.", uid, guild_id_value)
+    return False
 
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
@@ -1432,10 +1449,10 @@ async def simkl_achievements(i,user: discord.Member | None = None):
                     when=f" — <t:{int(dt.timestamp())}:d>"
                 except (TypeError,ValueError):
                     pass
-            lines.append(f"{achievement['emoji']} **{achievement['name']}**{when}\n{achievement['description']}")
+            lines.append(f"{achievement['emoji']} **{achievement['name']}** · **+{int(achievement.get('xp', 0)):,} XP**{when}\n{achievement['description']}")
         else:
             current=progress.get(achievement["category"],0)
-            lines.append(f"🔒 **{achievement['name']}** — {min(current,achievement['threshold']):,}/{achievement['threshold']:,}\n{achievement['description']}")
+            lines.append(f"🔒 **{achievement['name']}** · **+{int(achievement.get('xp', 0)):,} XP** — {min(current,achievement['threshold']):,}/{achievement['threshold']:,}\n{achievement['description']}")
 
     embed=discord.Embed(
         title=f"🏆 {target.display_name}'s Achievements",
@@ -1478,6 +1495,9 @@ async def simkl_stats(i,user: discord.Member | None = None):
         await i.response.send_message(f"No watch statistics have been recorded for {target.mention} in this server yet.",ephemeral=True); return
     timezone_info=await storage.get_timezone(g)
     embed=discord.Embed(title=f"{target.display_name}'s Watch Stats",description=await format_watch_stats(stats, timezone_info["name"]),color=0x5865F2)
+    unlocked_achievements=await storage.get_achievements(g,str(target.id))
+    achievement_xp=sum(int(achievement.get("xp",0)) for aid,achievement in all_achievements() if aid in unlocked_achievements)
+    embed.add_field(name="🏆 Achievements",value=f"**{len(unlocked_achievements):,}/{len(ACHIEVEMENTS):,} unlocked**\n💎 **{achievement_xp:,} XP earned**",inline=False)
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.set_footer(text="SIMKLTrackerBot · All-time statistics")
     await i.response.send_message(embed=embed)
