@@ -903,16 +903,23 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         log.error("Could not backfill progression history for user %s: %s: %s",uid,type(exc).__name__,exc)
         return 0
 
-    if history_backfill_needed:
-        progression_after_backfill=await storage.get_progression(uid)
+    progression_after_backfill=await storage.get_progression(uid)
+    if progression_after_backfill.get("history_xp_seeded") and not progression_after_backfill.get("history_xp_notification_sent"):
         backfill_xp=(
             int(progression_after_backfill.get("xp", 0))
             - int(progression_before_backfill.get("xp", 0))
         )
-        if progression_after_backfill.get("history_xp_seeded"):
-            await notify_history_backfill(
-                g, uid, backfill_xp, progression_after_backfill, ch
+        if not history_backfill_needed:
+            # Compatibility path for users whose history was backfilled before
+            # the completion notification feature was introduced.
+            backfill_xp=sum(
+                int(event.get("amount", 0))
+                for event in progression_after_backfill.get("xp_events", [])
+                if event.get("media_type") in {"episode", "anime_episode", "movie", "anime_movie"}
             )
+        await notify_history_backfill(
+            g, uid, backfill_xp, progression_after_backfill, ch
+        )
 
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
