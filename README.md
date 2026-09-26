@@ -40,6 +40,8 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 - 📊 Personal and server watch statistics
 - 🔥 Watch streak tracking
 - 🏆 Server watch leaderboards
+- 📈 XP levels, ranks, and prestige progression
+- 🎯 Daily and weekly watch challenges
 - 🛠️ Administrator tools for configuration and manual checks
 
 ## Commands
@@ -49,7 +51,6 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-stats` | Everyone | View watch statistics for yourself or another server member |
 | `/simkl-streak` | Everyone | View your current and longest watch streak |
 | `/simkl-leaderboard` | Everyone | View the server watch leaderboard |
-| `/simkl-community` | Everyone | View combined server watch statistics |
 | `/simkl-link` | Everyone | Link your SIMKL account to the bot |
 | `/simkl-unlink` | Everyone | Unlink your SIMKL account |
 | `/simkl-style` | Everyone | Set your personal embed, artwork, text, and rating preferences |
@@ -58,6 +59,12 @@ Everything is self-hosted, and linked SIMKL account data is stored locally on yo
 | `/simkl-status` | Manage Server | View the server's configuration, linked users, and polling health |
 | `/simkl-timezone` | Manage Server | View or set the server timezone used for dates, statistics, and streaks |
 | `/simkl-weekly-recap` | Manage Server | Post a weekly watch recap; use the period option to test it immediately |
+| `/simkl-level` | Everyone | View your XP level, rank, prestige, and lifetime XP |
+| `/simkl-xp` | Everyone | View your XP breakdown |
+| `/simkl-challenges` | Everyone | View current daily and weekly watch challenges |
+| `/simkl-xp-leaderboard` | Everyone | View the server XP leaderboard |
+| `/simkl-prestige` | Everyone | Prestige after reaching Level 100 |
+| `/simkl-user-reset` | Everyone | Reset your tracking history for the current server |
 | `/simkl-checknow` | Manage Server | Immediately check SIMKL for new activity |
 
 ### Weekly Recaps
@@ -73,6 +80,16 @@ Administrators can test the feature immediately with:
 
 The test command posts the recap to the normal activity channel, so it tests the same posting path used by the automatic recap. The recap includes total watches, episode/movie/anime breakdowns, active days, active users, and the top watchers with Discord mentions.
 
+## Progression
+
+Users earn XP automatically from newly detected watch activity. Episodes award **100 XP** and movies award **300 XP**. XP is tracked globally for the Discord user, while watch statistics remain server-local.
+
+Progression has 100 levels per prestige, with ranks ranging from **Newcomer** to **Screen Immortal**. Reaching Level 100 unlocks `/simkl-prestige`, which resets the current level progression while preserving lifetime XP, achievements, and watch statistics.
+
+The bot also generates three daily and three weekly watch challenges. Completing a challenge grants bonus XP. Challenge progress is based on watch activity detected by the bot and is tracked separately from the server watch statistics.
+
+Use `/simkl-level`, `/simkl-xp`, `/simkl-challenges`, `/simkl-xp-leaderboard`, and `/simkl-prestige` to view and manage progression.
+
 ## Watch statistics
 
 The bot keeps per-server watch statistics locally in `data/store.json`. Statistics are updated when activity is successfully processed and are seeded from existing watch history when a user first links their SIMKL account.
@@ -82,17 +99,8 @@ Available commands:
 - `/simkl-stats` — View episode, movie, anime, and streak statistics. You can optionally select another server member.
 - `/simkl-streak` — View current and longest watch streaks.
 - `/simkl-leaderboard` — View the top 10 users by total watches, episodes, movies, or anime.
-- `/simkl-community` — View combined watch statistics for the server.
 
 Statistics are local and do not require additional SIMKL API requests after the activity data has already been retrieved for normal polling.
-
-## Rating customization
-
-Ratings can be controlled with `/simkl-ratings`.
-
-Users can choose whether IMDb and MyAnimeList ratings are shown on their own activity messages. Administrators can use `/simkl-ratings-server` to set the server-wide defaults.
-
-Personal rating preferences override the server defaults.
 
 ### Embed customization
 
