@@ -12,7 +12,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from progression import challenges_for, roll_prestige
+from progression import challenges_for, roll_prestige, xp_for_level
 from community import episode_contributions, split_pool
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "store.json")
@@ -495,7 +495,18 @@ class Storage:
         if not isinstance(user, dict):
             return None
         _normalise_user(user)
-        if roll_prestige(user["progression"]):
+        progression = user["progression"]
+        # The retired /simkl-prestige command set current XP to zero, even if
+        # the user had earned well past the Level 100 threshold. Lifetime XP
+        # kept those points. Restore the missing carry exactly once for older
+        # prestige records; do not add XP to the lifetime total or XP ledger.
+        if int(progression.get("prestige", 0)) and not progression.get("prestige_carry_repaired"):
+            expected = max(0, int(progression.get("lifetime_xp", 0))
+                           - int(progression["prestige"]) * xp_for_level(100))
+            progression["xp"] = max(int(progression.get("xp", 0)), expected)
+            progression["prestige_carry_repaired"] = True
+            self._dirty = True
+        if roll_prestige(progression):
             self._dirty = True
         return user
 

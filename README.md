@@ -85,6 +85,8 @@ Users earn XP automatically from newly detected watch activity. Episodes award *
 
 Progression has 100 levels per prestige, with ranks ranging from **Newcomer** to **Screen Immortal**. At the Level 100 XP threshold, prestige advances automatically. Any excess XP carries into the new tier, including awards large enough to cross multiple tiers. Lifetime XP, achievements, and watch statistics remain intact.
 
+On first access after upgrading, an account that used the retired manual prestige command has its missing rollover XP restored from its recorded lifetime XP. This repair runs once and leaves lifetime XP unchanged.
+
 The bot also generates three daily and three weekly watch challenges. Completing a challenge grants bonus XP. Challenge progress is based on watch activity detected by the bot and is tracked separately from the server watch statistics. `/simkl-challenges` shows Discord countdown timestamps for their 00:00 UTC resets.
 
 Each server also has a `/simkl-community` weekly cooperative episode goal. The target is fixed when that week's challenge is first created: 20 episodes per linked member, with a minimum of 25. Anime episodes count; movies do not. The XP pool is 300 XP per target episode. When the goal is met, the pool is split among contributors in proportion to their recorded episodes after the deadline, and can be reconciled if SIMKL later removes recorded watches. Weeks run Monday to Monday in the server's configured timezone. The command shows a live Discord countdown. Because watch XP is global, an episode can contribute to each server where that user is linked.

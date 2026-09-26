@@ -98,3 +98,42 @@ def test_existing_level_100_xp_rolls_over_without_relinking():
             finally:
                 storage_module.DATA_PATH=previous
     asyncio.run(scenario())
+
+
+def test_manual_prestige_restores_only_missing_carry_once():
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            previous=storage_module.DATA_PATH
+            storage_module.DATA_PATH=f"{directory}/store.json"
+            try:
+                store=storage_module.Storage()
+                await store.link_user("123","donny","token",None,"donny","2026-09-26T00:00:00Z")
+                await store.link_user("123","korene","token",None,"korene","2026-09-26T00:00:00Z")
+                await store.link_user("123","past_two","token",None,"viewer","2026-09-26T00:00:00Z")
+                await store.get_progression("donny")
+                await store.get_progression("korene")
+                await store.get_progression("past_two")
+                donny=store._data["users"]["donny"]["progression"]
+                donny.update(prestige=1,xp=22_750,lifetime_xp=697_750,prestige_notified=1)
+                korene=store._data["users"]["korene"]["progression"]
+                korene.update(prestige=2,xp=12_500,lifetime_xp=712_500,prestige_notified=2)
+                past_two=store._data["users"]["past_two"]["progression"]
+                past_two.update(prestige=1,xp=1_000,lifetime_xp=720_000,prestige_notified=1)
+
+                actual=await store.get_progression("donny")
+                assert (actual["prestige"],actual["xp"],actual["lifetime_xp"]) == (1,347_750,697_750)
+                assert await store.claim_prestige_notifications("donny")==[]
+                other=await store.get_progression("korene")
+                assert (other["prestige"],other["xp"],other["lifetime_xp"]) == (2,12_500,712_500)
+                assert await store.claim_prestige_notifications("korene")==[]
+                advanced=await store.get_progression("past_two")
+                assert (advanced["prestige"],advanced["xp"],advanced["lifetime_xp"]) == (2,20_000,720_000)
+                assert await store.claim_prestige_notifications("past_two")==[2]
+
+                await store.flush()
+                restored=storage_module.Storage()
+                assert (await restored.get_progression("donny"))["xp"]==347_750
+                assert (await restored.get_progression("korene"))["xp"]==12_500
+            finally:
+                storage_module.DATA_PATH=previous
+    asyncio.run(scenario())
