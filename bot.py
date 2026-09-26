@@ -765,6 +765,13 @@ async def reconcile_watch_progression(uid, u, token, changed_types, request_cach
     media_types=set()
 
     for t in changed_types:
+        if t == "movies":
+            media_types.update({"movie", "anime_movie"})
+        elif t == "anime":
+            media_types.update({"anime_episode", "anime_movie"})
+        else:
+            media_types.add("episode")
+
         items, token = await cached_simkl_items(
             uid,
             u,
@@ -808,7 +815,6 @@ async def reconcile_watch_progression(uid, u, token, changed_types, request_cach
             media_types.add("anime_movie")
 
         media_type="anime_episode" if t == "anime" else "episode"
-        media_types.add(media_type)
         for episode in iter_show_episodes(t, episode_items):
             if not episode.get("watched_raw"):
                 continue
