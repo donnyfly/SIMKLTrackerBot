@@ -10,6 +10,7 @@ from simkl_client import SimklAuthError, SimklClient, SimklSlowDown
 from storage import EPOCH_ISO, storage
 from achievements import ACHIEVEMENTS, all_achievements
 from progression import challenges_for, challenge_progress, level_progress, rank_for_level, xp_for_level, xp_for_watch
+from level_visuals import render_level_up_gif
 from tmdb_client import TmdbClient
 from mdblist_client import MdbListClient
 from imdb_client import ImdbClient
@@ -1305,11 +1306,21 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
     if channel is None:
         log.warning("Level-up notification skipped for user %s: no channel.", uid)
         return False
+
     before_level = level_progress(int(before_progression.get("xp", 0)))[0]
     after_level = level_progress(int(after_progression.get("xp", 0)))[0]
-    log.info("Progression check for user %s in guild %s: level %d -> %d (XP %d -> %d).", uid, guild_id_value, before_level, after_level, int(before_progression.get("xp", 0)), int(after_progression.get("xp", 0)))
+    log.info(
+        "Progression check for user %s in guild %s: level %d -> %d (XP %d -> %d).",
+        uid,
+        guild_id_value,
+        before_level,
+        after_level,
+        int(before_progression.get("xp", 0)),
+        int(after_progression.get("xp", 0)),
+    )
     if after_level <= before_level:
         return False
+
     guild = bot.get_guild(int(guild_id_value))
     member = guild.get_member(int(uid)) if guild else None
     if member is None and guild:
@@ -1317,21 +1328,92 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
             member = await guild.fetch_member(int(uid))
         except Exception:
             member = None
+
     mention = member.mention if member else f"<@{uid}>"
-    rank = rank_for_level(after_level)
+    before_rank = rank_for_level(before_level)
+    after_rank = rank_for_level(after_level)
+    rank_up = after_rank != before_rank
+    levels_gained = after_level - before_level
+
+    title = "Rank Up" if rank_up else "Level Up"
+    description = f"{mention} reached **Level {after_level}**"
+    if levels_gained > 1:
+        description += f" · **+{levels_gained} levels**"
+    description += f"\n**{after_rank}**"
+    if rank_up:
+        description += f"\n\n*New rank unlocked from {before_rank}.*"
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=0x7986FF,
+    )
+    embed.set_footer(text="SIMKL Tracker · Progression")
+
     try:
+        animation = render_level_up_gif(
+            after_level,
+            after_rank,
+            previous_level=before_level,
+            previous_rank=before_rank,
+        )
+        file = discord.File(animation, filename="level-up.gif")
+        embed.set_image(url="attachment://level-up.gif")
         await channel.send(
-            f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**",
+            embed=embed,
+            file=file,
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
-        log.info("Sent level-up notification for user %s in guild %s: level %d.", uid, guild_id_value, after_level)
+        log.info(
+            "Sent animated level-up notification for user %s in guild %s: level %d -> %d%s.",
+            uid,
+            guild_id_value,
+            before_level,
+            after_level,
+            " (rank up)" if rank_up else "",
+        )
         return True
-    except discord.Forbidden:
-        log.error("Discord denied permission for level-up notification in channel %s (guild %s, user %s). Check Send Messages and channel overrides.", getattr(channel, "id", "unknown"), guild_id_value, uid)
-    except discord.HTTPException as exc:
-        log.error("Discord HTTP error sending level-up notification in channel %s (status=%s): %s", getattr(channel, "id", "unknown"), exc.status, exc)
     except Exception:
-        log.exception("Unexpected failure sending level-up notification for user %s in guild %s.", uid, guild_id_value)
+        # A visual rendering/upload problem must never suppress the actual
+        # progression notification. Fall back to the same clean embed.
+        log.exception(
+            "Animated level-up notification failed for user %s in guild %s; trying embed fallback.",
+            uid,
+            guild_id_value,
+        )
+        embed.set_image(url=None)
+        try:
+            await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            log.info(
+                "Sent fallback level-up notification for user %s in guild %s: level %d.",
+                uid,
+                guild_id_value,
+                after_level,
+            )
+            return True
+        except discord.Forbidden:
+            log.error(
+                "Discord denied permission for level-up notification in channel %s (guild %s, user %s). Check Send Messages, Attach Files, and channel overrides.",
+                getattr(channel, "id", "unknown"),
+                guild_id_value,
+                uid,
+            )
+        except discord.HTTPException as exc:
+            log.error(
+                "Discord HTTP error sending level-up notification in channel %s (status=%s): %s",
+                getattr(channel, "id", "unknown"),
+                exc.status,
+                exc,
+            )
+        except Exception:
+            log.exception(
+                "Unexpected failure sending fallback level-up notification for user %s in guild %s.",
+                uid,
+                guild_id_value,
+            )
     return False
 
 def stats_total(statistics):
