@@ -942,7 +942,7 @@ async def notify_history_backfill(guild_id_value, uid, xp_earned, progression, c
         log.exception("Unexpected failure sending historical progression notification for user %s.", uid)
     return False
 
-async def poll_one(ch,g,uid,u,gu,request_cache=None):
+async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
     try:
@@ -1023,7 +1023,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     changed_types=set()
     for t in MEDIA_TYPES:
         stamp=(activities.get(ACTIVITY_KEYS[t]) or {}).get("all")
-        if stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO)):
+        if force_reconcile or (stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO))):
             changed_types.add(t)
     try:
         token,removed_xp=await reconcile_watch_progression(
@@ -1104,7 +1104,7 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
     await notify_level_up(g,uid,progression_before_poll,progression_after_poll,ch)
     return posted
 
-async def poll_all(g=None):
+async def poll_all(g=None, force_reconcile=False):
     started = time.monotonic()
 
     async with poll_lock:
@@ -1143,7 +1143,7 @@ async def poll_all(g=None):
                             continue
 
                     try:
-                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache)
+                        posted+=await poll_one(ch,int(gid),uid,user_data,x["guild_user_data"],request_cache,force_reconcile=force_reconcile)
                     except SimklAuthError as exc:
                         error=f"SIMKL authentication failed: {exc}"
                         await mark_poll_failure(gid,uid,error,x["guild_user_data"].get("consecutive_failures",0))
@@ -2828,7 +2828,7 @@ async def simkl_checknow(i):
     if poll_lock.locked(): await i.response.send_message("A SIMKL activity check is already running.",ephemeral=True); return
     last_checknow_at=time.monotonic()
     await i.response.send_message("Checking this server's SIMKL activity now...",ephemeral=True)
-    posted=await poll_all(g)
+    posted=await poll_all(g,force_reconcile=True)
     await i.followup.send(f"Done. Posted **{posted}** new activity item(s). Check the bot logs if this says 0.",ephemeral=True)
 
 POLL_RETRY_DELAY_SECONDS=60
