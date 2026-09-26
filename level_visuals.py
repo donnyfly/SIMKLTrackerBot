@@ -114,7 +114,7 @@ def draw_prestige_backdrop(draw: ImageDraw.ImageDraw, box, accent, prestige: int
         cx,cy=right-135,top+height//2
         for radius in (35,65,95):
             draw.ellipse((cx-radius,cy-radius//2,cx+radius,cy+radius//2),outline=glow,width=2)
-        draw.line((left+16,top+height//2,right-242,top+height//2),fill=dark,width=2)
+        draw.line((right-245,top+height//2,right-232,top+height//2),fill=dark,width=2)
     elif motif == 4:  # shield facets
         cx,cy=right-132,top+height//2
         for radius in (52,88):
@@ -202,9 +202,12 @@ def render_prestige_gif(prestige: int) -> BytesIO:
         draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), fill=_mix(soft,accent,0.55 + pulse*0.4))
         _prestige_emblem(draw,cx,cy-6,emblem)
         tier_label=f"P{prestige}"
-        tier_font=_font(11)
+        tier_font=_font(13)
         tier_width=draw.textbbox((0,0),tier_label,font=tier_font)[2]
-        draw.text((cx-tier_width/2,cy+17),tier_label,font=tier_font,fill=(25,30,43))
+        pill_left=cx-tier_width/2-12
+        pill_right=cx+tier_width/2+12
+        draw.rounded_rectangle((pill_left,cy+46,pill_right,cy+68),radius=11,fill=_PANEL,outline=_mix(_LINE,accent,0.5))
+        draw.text((cx-tier_width/2,cy+49),tier_label,font=tier_font,fill=accent)
         draw.text((230,58),"PRESTIGE UNLOCKED",font=_font(18),fill=accent)
         draw.text((230,82),str(prestige),font=_font(78),fill=_mix(_MUTED,_TEXT,reveal))
         draw.text((234,180),"A NEW CHAPTER",font=_font(26),fill=_TEXT)

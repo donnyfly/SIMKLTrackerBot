@@ -25,7 +25,7 @@ def _font(size):
 
 
 def _short(draw, value, font, width):
-    value=str(value or "—")
+    value="—" if value is None or value == "" else str(value)
     if draw.textbbox((0,0),value,font=font)[2] <= width:
         return value
     while value and draw.textbbox((0,0),value+"…",font=font)[2] > width:
@@ -103,8 +103,13 @@ def render_profile_png(name, data):
         image.paste(header,(48,24),mask)
         draw=ImageDraw.Draw(image)
     draw.text((48,36),"SIMKL / PROFILE",font=_font(19),fill=accent)
-    draw.text((48,67),_short(draw,name,_font(37),820),font=_font(37),fill=WHITE)
-    draw.text((930,72),f"P{prestige}",font=_font(31),fill=prestige_style(prestige)[0] if prestige else accent)
+    badge=f"P{prestige}"
+    badge_font=_font(31)
+    badge_width=draw.textbbox((0,0),badge,font=badge_font)[2]
+    badge_left=1000-badge_width
+    name_width=badge_left-48-28
+    draw.text((48,67),_short(draw,name,_font(37),name_width),font=_font(37),fill=WHITE)
+    draw.text((badge_left,72),badge,font=badge_font,fill=prestige_style(prestige)[0] if prestige else accent)
     draw.rounded_rectangle((48,115,1032,120),radius=2,fill=accent)
 
     _panel(draw,(48,144,1032,320))

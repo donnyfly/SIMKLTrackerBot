@@ -3,11 +3,11 @@ from datetime import date
 from io import BytesIO
 import tempfile
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 import storage as storage_module
 from level_visuals import accent_for_level, accent_for_tier, prestige_style, render_prestige_gif
-from profile_visuals import profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
+from profile_visuals import _short, profile_snapshot, render_profile_png, render_leaderboard_png, render_summary_png
 from progression import xp_for_level
 
 
@@ -51,6 +51,7 @@ def test_empty_genre_state_and_leaderboard_card():
         {"name":"Viewer","prestige":1,"level":9,"xp":500,"total":5},
     ])
     assert Image.open(board).size==(1080,845)
+    assert _short(ImageDraw.Draw(Image.new("RGB",(100,100))),0,ImageFont.load_default(),80)=="0"
     for heading in ("weekly recap","server statistics"):
         card=render_summary_png("Server",heading,"This week",[("Episodes",32),("Movies",4)],[("Top watcher","Viewer · 12 watches")])
         assert Image.open(card).size==(1080,735)
@@ -66,6 +67,14 @@ def test_prestige_emblems_and_accents_vary():
         gif=Image.open(render_prestige_gif(number))
         assert gif.size==(720,280)
         assert gif.n_frames>1
+    assert Image.open(render_prestige_gif(1000)).size==(720,280)
+
+
+def test_long_profile_name_and_wide_prestige_render():
+    stats={"episodes_watched":0,"movies_watched":0,"titles":{},"watch_dates":{}}
+    snapshot=profile_snapshot(stats,{"xp":0,"prestige":1000}, {},0,0,today=date(2026,9,26))
+    card=Image.open(render_profile_png("A Very Long Discord Display Name That Should Fit Properly",snapshot))
+    assert card.size==(1080,1065)
 
 
 def test_prestige_rollover_is_automatic_and_atomic():
