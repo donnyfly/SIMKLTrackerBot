@@ -94,7 +94,7 @@ Use `/simkl-debug feature: Level up` to preview the next level, or set `level`, 
 
 ## Watch statistics
 
-The bot keeps per-server watch statistics locally in `data/store.json`. Statistics are updated when activity is successfully processed and are seeded from existing watch history when a user first links their SIMKL account.
+The bot keeps per-server watch statistics locally in `data/store.json`. Statistics are updated when activity is successfully processed and are seeded from existing watch history when a user first links their SIMKL account. A full-history check also fills gaps for accounts linked on older versions while preserving already recorded rewatches.
 Linking now reports when the history import completes, including the imported watch count and level. History imports and retry checks run even before an activity posting channel is configured. If SIMKL is temporarily unavailable, `/simkl-status` shows whether each user's import is pending and the last error; automatic polling or `/simkl-checknow` retries it. `/simkl-stats`, `/simkl-server-stats`, and `/simkl-leaderboard` indicate when an import is still pending instead of treating an empty count as completed history.
 
 Available commands:

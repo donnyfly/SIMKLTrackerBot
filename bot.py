@@ -785,6 +785,7 @@ async def reconcile_watch_progression(g, uid, u, token, changed_types, request_c
         # Anime films can appear in either SIMKL catalog. Compare both before
         # deleting one or a partial catalog response could revoke valid watches.
         changed_types=set(changed_types) | {"movies","anime"}
+    full_statistics_snapshot=set(changed_types)==set(MEDIA_TYPES)
     active_watch_bases=set()
     media_types=set()
     baseline_entries=[]
@@ -821,7 +822,7 @@ async def reconcile_watch_progression(g, uid, u, token, changed_types, request_c
                 base=watch_xp_base_key(media_type, f"movies:{sid}")
                 if base:
                     active_watch_bases.add(base)
-                if legacy_statistics:
+                if full_statistics_snapshot:
                     baseline_entries.append({"media_type":media_type,"item_key":f"movies:{sid}",
                                              "title":movie.get("title") or "Untitled","watched_at":item["last_watched_at"],
                                              "genres":movie.get("genres") or item.get("genres") or []})
@@ -841,7 +842,7 @@ async def reconcile_watch_progression(g, uid, u, token, changed_types, request_c
             base=watch_xp_base_key("anime_movie", f"movies:{sid}")
             if base:
                 active_watch_bases.add(base)
-            if legacy_statistics:
+            if full_statistics_snapshot:
                 baseline_entries.append({"media_type":"anime_movie","item_key":f"movies:{sid}",
                                          "title":movie.get("title") or "Untitled","watched_at":item["last_watched_at"],
                                          "genres":movie.get("genres") or item.get("genres") or []})
@@ -857,17 +858,21 @@ async def reconcile_watch_progression(g, uid, u, token, changed_types, request_c
             )
             if base:
                 active_watch_bases.add(base)
-            if legacy_statistics:
+            if full_statistics_snapshot:
                 baseline_entries.append({"media_type":media_type,
                                          "item_key":f"series:{t}:{episode['simkl_id']}:{episode['season_num']}:{episode['episode_number']}",
                                          "title":episode.get("show_title") or "Untitled",
                                          "watched_at":episode["watched_raw"],"genres":episode.get("genres") or []})
 
     result=await storage.reconcile_watch_xp(uid, active_watch_bases, media_types)
+    if full_statistics_snapshot:
+        restored_xp=await storage.repair_missing_watch_xp(uid,baseline_entries)
+        if restored_xp:
+            log.info("Restored %d missing historical watch XP for user %s.",restored_xp,uid)
     removed_watches=await storage.reconcile_watch_statistics(
         g,uid,active_watch_bases,media_types,
-        baseline_entries=baseline_entries if legacy_statistics else None,
-        full_snapshot=set(changed_types)==set(MEDIA_TYPES),
+        baseline_entries=baseline_entries if full_statistics_snapshot else None,
+        full_snapshot=full_statistics_snapshot,
     )
     if removed_watches:
         log.info("Reconciled SIMKL watch statistics for user %s in guild %s: %d fewer watches.",uid,g,removed_watches)

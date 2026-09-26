@@ -277,6 +277,39 @@ def test_existing_link_with_empty_legacy_stats_repairs_without_relink(monkeypatc
     asyncio.run(scenario())
 
 
+def test_full_snapshot_fills_partial_history_without_duplicate_rewatch(monkeypatch):
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            monkeypatch.setattr(storage_module,"DATA_PATH",f"{directory}/store.json")
+            store=storage_module.Storage()
+            monkeypatch.setattr(bot,"storage",store)
+            await store.link_user("123","42","token",None,"tester","2026-09-20T00:00:00Z",simkl_account_id=123)
+            first="series:shows:99:1:1"
+            old_stamp="2026-09-20T10:00:00Z"
+            await store.record_watch("123","42","episode","Series",first,old_stamp)
+            await store.award_watch_xp("42",f"episode:{first}:{old_stamp}","episode","Series",old_stamp,100)
+            user=store._data["users"]["42"]
+            user["progression"]["history_xp_seeded"]=True
+            guild_user=store._data["guilds"]["123"]["users"]["42"]
+            guild_user["history_seeded"]=True
+            guild_user["history_stats_repaired"]=True
+            async def history(uid,user,token,media_type,**kwargs):
+                if media_type!="shows": return [],token
+                return [{"show":{"title":"Series","ids":{"simkl":99}},"seasons":[{
+                    "number":1,"episodes":[
+                        {"number":1,"watched_at":"2026-09-25T10:00:00Z"},
+                        {"number":2,"watched_at":"2026-09-25T10:00:00Z"},
+                    ]}]}],token
+            monkeypatch.setattr(bot,"cached_simkl_items",AsyncMock(side_effect=history))
+            await bot.reconcile_watch_progression("123","42",{},"token",set(bot.MEDIA_TYPES))
+            assert (await store.get_statistics("123","42"))["episodes_watched"]==2
+            assert (await store.get_progression("42"))["xp"]==200
+            await bot.reconcile_watch_progression("123","42",{},"token",set(bot.MEDIA_TYPES))
+            assert (await store.get_statistics("123","42"))["episodes_watched"]==2
+            assert (await store.get_progression("42"))["xp"]==200
+    asyncio.run(scenario())
+
+
 def test_consolidated_xp_leaderboard_orders_prestige_then_xp(monkeypatch):
     async def scenario():
         rows=[

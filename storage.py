@@ -797,6 +797,33 @@ class Storage:
         await self.flush()
         return amount
 
+    async def repair_missing_watch_xp(self, discord_user_id: str, entries: list[dict]) -> int:
+        """Fill gaps from a full SIMKL snapshot without duplicating existing rewatches."""
+        async with _lock:
+            user=self._user(discord_user_id)
+            if not user or not user["progression"].get("history_xp_seeded"):
+                return 0
+            progression=user["progression"]
+            existing={key[:-len(stamp)] for key,stamp in progression["watch_xp_keys"].items()
+                      if isinstance(key,str) and isinstance(stamp,str) and stamp and key.endswith(stamp)}
+            seen=set()
+            missing=[]
+            for entry in entries:
+                base=f"{entry['media_type']}:{entry['item_key']}:"
+                if base in seen or base in existing:
+                    continue
+                seen.add(base)
+                missing.append({"event_key":base+entry["watched_at"],
+                                "media_type":entry["media_type"],"title":entry["title"],
+                                "at":entry["watched_at"],
+                                "amount":300 if entry["media_type"] in {"movie","anime_movie"} else 100})
+            amount,_=_add_watch_xp_events(progression,missing)
+            if amount:
+                self._dirty=True
+        if amount:
+            await self.flush()
+        return amount
+
     async def mark_history_xp_notification_sent(self, discord_user_id: str) -> None:
         async with _lock:
             user = self._user(discord_user_id)
@@ -1188,6 +1215,15 @@ class Storage:
             else:
                 events={key:event for key,event in events.items()
                         if event.get("media_type") not in media_types or _watch_base(event) in active_watch_bases}
+                if full_snapshot and baseline_entries is not None:
+                    present_bases={_watch_base(event) for event in events.values()}
+                    for entry in baseline_entries:
+                        base=_watch_base(entry)
+                        if base not in present_bases:
+                            entry=copy.deepcopy(entry)
+                            entry["genres"]=_genre_names(entry.get("genres"))
+                            events[_watch_event_id(entry)]=entry
+                            present_bases.add(base)
             if events != stats.get("watch_events"):
                 previous=int(stats.get("episodes_watched",0))+int(stats.get("movies_watched",0))
                 guild=self._guild(guild_id)
