@@ -139,3 +139,59 @@ def test_legacy_poll_health_defaults_include_consecutive_failures(tmp_path, monk
     store = storage_module.Storage()
     user = store._guild_user("123", "42")
     assert user["consecutive_failures"] == 0
+
+def test_reset_user_tracking_preserves_link_and_resets_server_state(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+
+    async def scenario():
+        store = storage_module.Storage()
+        store._data["users"]["42"] = {
+            "simkl_token": "token",
+            "refresh_token": "refresh",
+            "simkl_username": "tester",
+            "simkl_account_id": 123,
+            "embed_preferences": {"style": "minimal"},
+            "embed_preferences_custom": True,
+        }
+        guild_user = storage_module._default_guild_user("2026-09-25T00:00:00Z")
+        guild_user["history_seeded"] = True
+        guild_user["announced"] = {"movie:1"}
+        guild_user["activity_state"]["statuses"]["movie:1"] = "completed"
+        guild_user["statistics"]["movies_watched"] = 10
+        guild_user["achievements"]["movies_25"] = {"unlocked_at": "2026-09-25T00:00:00Z"}
+        guild_user["last_poll_at"] = "2026-09-25T01:00:00Z"
+        store._guild("123", create=True)["users"]["42"] = guild_user
+        store._dirty = True
+        await store.flush()
+
+        reset_at = "2026-09-26T00:00:00Z"
+        assert await store.reset_user_tracking("123", "42", reset_at)
+
+        global_user = await store.get_user("42")
+        assert global_user["simkl_token"] == "token"
+        assert global_user["refresh_token"] == "refresh"
+        assert global_user["simkl_username"] == "tester"
+        assert global_user["simkl_account_id"] == 123
+        assert global_user["embed_preferences"]["style"] == "minimal"
+        assert global_user["embed_preferences_custom"] is True
+
+        reset_user = store._guild_user("123", "42")
+        assert reset_user["history_seeded"] is False
+        assert reset_user["last_checked"] == {
+            "shows": reset_at,
+            "movies": reset_at,
+            "anime": reset_at,
+        }
+        assert reset_user["announced"] == set()
+        assert reset_user["activity_state"]["statuses"] == {}
+        assert reset_user["activity_state"]["watch_times"] == {}
+        assert reset_user["statistics"]["movies_watched"] == 0
+        assert reset_user["statistics"]["episodes_watched"] == 0
+        assert reset_user["achievements"] == {}
+        assert reset_user["last_poll_at"] is None
+        assert reset_user["last_success_at"] is None
+        assert reset_user["last_error"] is None
+        assert reset_user["consecutive_failures"] == 0
+
+    asyncio.run(scenario())
