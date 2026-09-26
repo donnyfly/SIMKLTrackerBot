@@ -1188,6 +1188,48 @@ ACHIEVEMENT_CHOICES=[
     for aid,a in all_achievements()
 ]
 
+
+@bot.tree.command(name="simkl-user-reset",description="Reset your SIMKL tracking history for this server.")
+@app_commands.describe(confirm="Confirm that you want to reset your server-local tracking state")
+async def simkl_user_reset(i, confirm: bool = False):
+    g=guild_id(i)
+    if not g:
+        await i.response.send_message("This command must be used in a server.",ephemeral=True)
+        return
+
+    uid=str(i.user.id)
+    user=await storage.get_user(uid)
+    if not user or not user.get("simkl_token"):
+        await i.response.send_message(
+            "You don't have a linked SIMKL account. Use /simkl-link first.",
+            ephemeral=True,
+        )
+        return
+
+    if not confirm:
+        await i.response.send_message(
+            "This resets your SIMKL tracking history for this server, including watch statistics, "
+            "watched-state tracking, polling history, and achievements. Your SIMKL link and personal "
+            "style settings will be kept. If you want to continue, run /simkl-user-reset with confirm set to True.",
+            ephemeral=True,
+        )
+        return
+
+    reset_at=now_iso()
+    if not await storage.reset_user_tracking(g,uid,reset_at):
+        await i.response.send_message(
+            "I couldn't find your tracking data for this server.",
+            ephemeral=True,
+        )
+        return
+
+    await i.response.send_message(
+        "Your SIMKL tracking data for this server has been reset. "
+        "Your SIMKL account remains linked, and tracking will now start fresh.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="simkl-achievements",description="Show your SIMKL achievements.")
 @app_commands.describe(user="Optional server member to view")
 async def simkl_achievements(i,user: discord.Member | None = None):
