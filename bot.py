@@ -787,6 +787,64 @@ async def seed_progression_history(uid, u, token, request_cache=None):
     await storage.mark_history_xp_seeded(uid)
     log.info("Historical progression backfill completed for user %s: +%d XP.", uid, seeded)
     return token
+async def notify_history_backfill(guild_id_value, uid, xp_earned, progression, channel):
+    """Send a one-time summary after historical XP backfill completes."""
+    if channel is None:
+        log.warning("Historical progression notification skipped for user %s: no channel.", uid)
+        return False
+
+    if (await storage.get_progression(uid)).get("history_xp_notification_sent"):
+        return False
+
+    level = level_progress(int(progression.get("xp", 0)))[0]
+    rank = rank_for_level(level)
+    lifetime_xp = int(progression.get("lifetime_xp", 0))
+    guild = bot.get_guild(int(guild_id_value))
+    member = guild.get_member(int(uid)) if guild else None
+    if member is None and guild:
+        try:
+            member = await guild.fetch_member(int(uid))
+        except Exception:
+            member = None
+    mention = member.mention if member else f"<@{uid}>"
+
+    embed = discord.Embed(
+        title="📚 Historical Progression Imported",
+        description=(
+            f"{mention}, your existing SIMKL watch history has been added to your progression!\n\n"
+            f"✨ **+{int(xp_earned):,} XP**\n"
+            f"🏆 **Level {level} · {rank}**\n"
+            f"💫 **{lifetime_xp:,} lifetime XP**"
+        ),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="SIMKL Tracker · Historical XP Backfill")
+
+    try:
+        await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        await storage.mark_history_xp_notification_sent(uid)
+        log.info(
+            "Sent historical progression notification for user %s in guild %s: +%d XP, level %d.",
+            uid, guild_id_value, int(xp_earned), level,
+        )
+        return True
+    except discord.Forbidden:
+        log.error(
+            "Discord denied permission for historical progression notification in channel %s (guild %s, user %s).",
+            getattr(channel, "id", "unknown"), guild_id_value, uid,
+        )
+    except discord.HTTPException as exc:
+        log.error(
+            "Discord HTTP error sending historical progression notification in channel %s (status=%s).",
+            getattr(channel, "id", "unknown"), exc.status,
+        )
+    except Exception:
+        log.exception("Unexpected failure sending historical progression notification for user %s.", uid)
+    return False
+
 async def poll_one(ch,g,uid,u,gu,request_cache=None):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
@@ -835,6 +893,8 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         except Exception:
             log.warning("Profile lookup failed for %s.",uid)
     profile=simkl_profile_url(u.get("simkl_account_id"))
+    progression_before_backfill=await storage.get_progression(uid)
+    history_backfill_needed=not progression_before_backfill.get("history_xp_seeded")
     try:
         token=await seed_progression_history(uid,u,token,request_cache)
     except Exception as exc:
@@ -842,6 +902,18 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         await mark_poll_failure(g,uid,error,previous_failures)
         log.error("Could not backfill progression history for user %s: %s: %s",uid,type(exc).__name__,exc)
         return 0
+
+    if history_backfill_needed:
+        progression_after_backfill=await storage.get_progression(uid)
+        backfill_xp=(
+            int(progression_after_backfill.get("xp", 0))
+            - int(progression_before_backfill.get("xp", 0))
+        )
+        if progression_after_backfill.get("history_xp_seeded"):
+            await notify_history_backfill(
+                g, uid, backfill_xp, progression_after_backfill, ch
+            )
+
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
     posted=0
