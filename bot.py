@@ -1019,6 +1019,25 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         stamp=(activities.get(ACTIVITY_KEYS[t]) or {}).get("all")
         if stamp and parse_iso(stamp)>parse_iso(last.get(t,EPOCH_ISO)):
             changed_types.add(t)
+    try:
+        token,removed_xp=await reconcile_watch_progression(
+            uid,
+            u,
+            token,
+            changed_types,
+            request_cache,
+        )
+    except Exception as exc:
+        error=f"progression reconciliation: {type(exc).__name__}: {exc}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.error(
+            "Could not reconcile deleted SIMKL watch XP for user %s: %s: %s",
+            uid,
+            type(exc).__name__,
+            exc,
+        )
+        return 0
+
     posted=0
     cycle_errors=[]
     for t in MEDIA_TYPES:
@@ -1074,26 +1093,6 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
             consecutive_failures=0,flush=False
         )
         await storage.flush()
-
-    if not cycle_errors and changed_types:
-        try:
-            token,removed_xp=await reconcile_watch_progression(
-                uid,
-                u,
-                token,
-                changed_types,
-                request_cache,
-            )
-            if removed_xp:
-                await storage.flush()
-        except Exception as exc:
-            cycle_errors.append(f"progression reconciliation: {type(exc).__name__}")
-            log.error(
-                "Could not reconcile deleted SIMKL watch XP for user %s: %s: %s",
-                uid,
-                type(exc).__name__,
-                exc,
-            )
 
     progression_after_poll=await storage.get_progression(uid)
     await notify_level_up(g,uid,progression_before_poll,progression_after_poll,ch)
