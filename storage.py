@@ -654,10 +654,15 @@ class Storage:
             def event_base(event_key: str) -> str | None:
                 if not isinstance(event_key, str):
                     return None
-                for prefix in ("episode:", "anime_episode:", "movie:", "anime_movie:"):
-                    if event_key.startswith(prefix) and len(event_key) > 20 and event_key[-20:-19] == ":":
-                        return event_key[:-20]
-                return None
+                if not event_key.startswith(("episode:", "anime_episode:", "movie:", "anime_movie:")):
+                    return None
+                timestamp_marker=event_key.rfind("T")
+                if timestamp_marker <= 0:
+                    return None
+                delimiter=event_key.rfind(":", 0, timestamp_marker)
+                if delimiter <= 0:
+                    return None
+                return event_key[:delimiter + 1]
 
             kept_events = []
             for event in xp_events:
