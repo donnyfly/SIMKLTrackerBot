@@ -1045,6 +1045,10 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None,force_reconcile=False):
         )
         return 0
 
+    # Reconcile achievement state immediately after deleted watch XP is removed.
+    # This relocks thresholds that are no longer satisfied and revokes their XP.
+    await evaluate_achievements(g,uid)
+
     posted=0
     cycle_errors=[]
     for t in MEDIA_TYPES:
@@ -1183,32 +1187,89 @@ def achievement_progress(statistics, timezone_name=DEFAULT_TIMEZONE_NAME):
     }
 
 
+def achievement_progress_from_events(events, timezone_name=DEFAULT_TIMEZONE_NAME):
+    """Build achievement counters from currently-active watch XP events.
+
+    Unlike the legacy cumulative statistics, watch XP events are reconciled
+    against SIMKL when watched items are removed, so this view can relock
+    achievements accurately.
+    """
+    watch_types={"episode","anime_episode","movie","anime_movie"}
+    active=[event for event in (events or []) if event.get("media_type") in watch_types]
+    episodes=sum(1 for event in active if event.get("media_type") in {"episode","anime_episode"})
+    movies=sum(1 for event in active if event.get("media_type") in {"movie","anime_movie"})
+    anime_episodes=sum(1 for event in active if event.get("media_type") == "anime_episode")
+
+    try:
+        local_timezone=ZoneInfo(timezone_name)
+    except (TypeError,ValueError,ZoneInfoNotFoundError):
+        local_timezone=ZoneInfo(DEFAULT_TIMEZONE_NAME)
+
+    watch_dates={}
+    for event in active:
+        stamp=event.get("at")
+        if not stamp:
+            continue
+        try:
+            dt=datetime.fromisoformat(str(stamp).replace("Z","+00:00"))
+            if dt.tzinfo is None:
+                dt=dt.replace(tzinfo=timezone.utc)
+            day=dt.astimezone(local_timezone).date().isoformat()
+        except (TypeError,ValueError):
+            continue
+        watch_dates[day]={"total":1}
+
+    _,longest=calculate_streaks(watch_dates,timezone_name)
+    return {
+        "total": episodes+movies,
+        "episodes": episodes,
+        "movies": movies,
+        "anime_episodes": anime_episodes,
+        "streak": longest,
+    }
+
+
 async def evaluate_achievements(g, uid, notify_channel=None, force_id=None):
-    """Unlock qualifying achievements and optionally announce new live unlocks."""
-    stats=await storage.get_statistics(g,uid)
+    """Keep achievement locks and rewards in sync with current SIMKL history."""
     timezone_info=await storage.get_timezone(g)
-    progress=achievement_progress(stats,timezone_info["name"])
+    progression=await storage.get_progression(uid)
+    progress=achievement_progress_from_events(
+        progression.get("xp_events", []),
+        timezone_info["name"],
+    )
     unlocked=await storage.get_achievements(g,uid)
     newly_unlocked=[]
+    newly_relocked=[]
     now=datetime.now(timezone.utc).isoformat()
 
     for achievement_id, achievement in all_achievements():
-        already_unlocked = achievement_id in unlocked
+        already_unlocked=achievement_id in unlocked
         if force_id is not None:
             if achievement_id != force_id:
                 continue
             qualifies=True
         else:
             qualifies=progress.get(achievement["category"],0) >= achievement["threshold"]
+
         if not qualifies:
+            if already_unlocked:
+                result=await storage.relock_achievement(g,uid,achievement_id)
+                if result.get("relocked"):
+                    newly_relocked.append(achievement_id)
+                    unlocked.pop(achievement_id,None)
+                    log.info(
+                        "Relocked achievement %s for user %s in guild %s after SIMKL history reconciliation; removed %d XP.",
+                        achievement_id,uid,g,int(result.get("xp_removed",0)),
+                    )
             continue
 
         if not already_unlocked:
-            unlocked_now = await storage.unlock_achievement(g,uid,achievement_id,now,flush=False)
+            unlocked_now=await storage.unlock_achievement(g,uid,achievement_id,now,flush=False)
             if unlocked_now:
                 newly_unlocked.append(achievement_id)
+                unlocked[achievement_id]={"unlocked_at":now}
 
-        achievement_xp = int(achievement.get("xp", 0))
+        achievement_xp=int(achievement.get("xp",0))
         if achievement_xp > 0:
             await storage.award_achievement_xp(
                 uid,
