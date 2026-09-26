@@ -100,11 +100,15 @@ def render_prestige_gif(prestige: int) -> BytesIO:
         cx,cy=132,137
         for ring in range(3):
             phase=max(0.0, min(1.0, t * 1.35 - ring * 0.12))
-            radius=34 + int(phase * 54)
+            radius=44 + int(phase * 54)
             draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), outline=_mix(_PANEL,soft,(1-phase)*0.8), width=2)
-        radius=27 + int(4*pulse)
+        radius=34 + int(4*pulse)
         draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), fill=_mix(soft,accent,0.55 + pulse*0.4))
-        _prestige_emblem(draw,cx,cy,emblem)
+        _prestige_emblem(draw,cx,cy-6,emblem)
+        tier_label=f"P{prestige}"
+        tier_font=_font(11)
+        tier_width=draw.textbbox((0,0),tier_label,font=tier_font)[2]
+        draw.text((cx-tier_width/2,cy+17),tier_label,font=tier_font,fill=_TEXT)
         draw.text((230,58),"PRESTIGE UNLOCKED",font=_font(18),fill=accent)
         draw.text((230,82),str(prestige),font=_font(78),fill=_mix(_MUTED,_TEXT,reveal))
         draw.text((234,180),"A NEW CHAPTER",font=_font(26),fill=_TEXT)
