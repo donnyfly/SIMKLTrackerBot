@@ -195,3 +195,30 @@ def test_reset_user_tracking_preserves_link_and_resets_server_state(tmp_path, mo
         assert reset_user["consecutive_failures"] == 0
 
     asyncio.run(scenario())
+
+
+def test_achievement_xp_is_idempotent(tmp_path, monkeypatch):
+    data_path = tmp_path / "store.json"
+    monkeypatch.setattr(storage_module, "DATA_PATH", str(data_path))
+
+    async def scenario():
+        store = storage_module.Storage()
+        await store.link_user(
+            "123", "42", "token", "refresh", "tester",
+            "2026-09-26T00:00:00Z", token_expires_at=None, simkl_account_id=123,
+        )
+        first = await store.award_achievement_xp(
+            "42", "episodes_50", 250, "Seasoned Watcher", "2026-09-26T10:00:00Z"
+        )
+        second = await store.award_achievement_xp(
+            "42", "episodes_50", 250, "Seasoned Watcher", "2026-09-26T10:00:00Z"
+        )
+        progression = await store.get_progression("42")
+        assert first["awarded"] is True
+        assert second["awarded"] is False
+        assert progression["xp"] == 250
+        assert progression["lifetime_xp"] == 250
+        assert progression["achievement_xp_awarded"]["episodes_50"]
+        assert len(progression["xp_events"]) == 1
+
+    asyncio.run(scenario())
