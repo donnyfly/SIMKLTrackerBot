@@ -558,6 +558,18 @@ class Storage:
             self._dirty = True
         await self.flush()
 
+    async def reset_user_tracking(self, guild_id: str | int, discord_user_id: str, start_time_iso: str) -> bool:
+        """Reset one user's server-local tracking state while preserving their SIMKL link and preferences."""
+        async with _lock:
+            self._migrate_legacy_guild_locked(str(guild_id))
+            guild = self._guild(guild_id)
+            if not guild or str(discord_user_id) not in guild["users"]:
+                return False
+            guild["users"][str(discord_user_id)] = _default_guild_user(start_time_iso)
+            self._dirty = True
+        await self.flush()
+        return True
+
     async def get_activity_state(self, guild_id: str | int, discord_user_id: str) -> dict:
         async with _lock:
             self._migrate_legacy_guild_locked(str(guild_id))
