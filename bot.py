@@ -419,11 +419,12 @@ async def cached_simkl_activities(uid,u,token,request_cache):
 async def seed_history(g,uid,u,token,request_cache=None):
     last=await storage.get_last_checked(g,uid); keys=[]; statuses={}; watches={}; seeded_stats=[]
     for t in MEDIA_TYPES:
-        since=parse_iso(last.get(t,EPOCH_ISO)); items,token=await cached_simkl_items(uid,u,token,t,request_cache=request_cache,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
+        since=parse_iso(last.get(t,EPOCH_ISO)); initial_seed=last.get(t,EPOCH_ISO) == EPOCH_ISO
+        items,token=await cached_simkl_items(uid,u,token,t,request_cache=request_cache,timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
         if t=="movies":
             for x in items or []:
                 m=x.get("movie") or {}; sid=(m.get("ids") or {}).get("simkl"); wr=x.get("last_watched_at")
-                if sid is None or (wr and parse_iso(wr)>since): continue
+                if sid is None or (not initial_seed and wr and parse_iso(wr)>since): continue
                 k=movie_key(t,sid); keys.append(k)
                 if x.get("status"): statuses[f"{t}:{sid}"]=x["status"]
                 if wr:
@@ -739,6 +740,53 @@ async def mark_poll_failure(g,uid,error,previous_failures=0):
     failures=max(int(previous_failures or 0),0)+1
     await storage.update_poll_health(g,uid,last_error=error,consecutive_failures=failures,flush=True)
 
+async def seed_progression_history(uid, u, token, request_cache=None):
+    """Backfill XP from the user's existing SIMKL watch history exactly once."""
+    progression = await storage.get_progression(uid)
+    if progression.get("history_xp_seeded"):
+        return token
+    seeded = 0
+    for t in MEDIA_TYPES:
+        items, token = await cached_simkl_items(uid, u, token, t, request_cache=request_cache, timeout=HISTORY_FETCH_TIMEOUT_SECONDS)
+        if t == "movies":
+            for item in items or []:
+                movie = item.get("movie") or {}
+                ids = movie.get("ids") or {}
+                sid = ids.get("simkl")
+                watched_at = item.get("last_watched_at")
+                if sid is None or not watched_at:
+                    continue
+                anime_movie = bool(movie.get("anime_type") == "movie" or movie.get("type") == "movie" or ids.get("mal"))
+                media_type = "anime_movie" if anime_movie else "movie"
+                event_key = f"{media_type}:movies:{sid}:{watched_at}"
+                result = await storage.award_watch_xp(uid, event_key, media_type, movie.get("title") or "Untitled", watched_at, xp_for_watch(media_type))
+                seeded += int(result.get("amount", 0))
+            continue
+        episode_items = items or []
+        movie_items = []
+        if t == "anime":
+            episode_items, movie_items = await split_anime_items(items)
+        for item in movie_items:
+            movie = item.get("movie") or item.get("show") or {}
+            ids = movie.get("ids") or {}
+            sid = ids.get("simkl")
+            watched_at = item.get("last_watched_at")
+            if sid is None or not watched_at:
+                continue
+            event_key = f"anime_movie:movies:{sid}:{watched_at}"
+            result = await storage.award_watch_xp(uid, event_key, "anime_movie", movie.get("title") or "Untitled", watched_at, xp_for_watch("anime_movie"))
+            seeded += int(result.get("amount", 0))
+        for episode in iter_show_episodes(t, episode_items):
+            watched_at = episode.get("watched_raw")
+            if not watched_at:
+                continue
+            media_type = "anime_episode" if t == "anime" else "episode"
+            event_key = f"{media_type}:series:{t}:{episode['simkl_id']}:{episode['season_num']}:{episode['episode_number']}:{watched_at}"
+            result = await storage.award_watch_xp(uid, event_key, media_type, episode.get("show_title") or "Untitled", watched_at, xp_for_watch(media_type))
+            seeded += int(result.get("amount", 0))
+    await storage.mark_history_xp_seeded(uid)
+    log.info("Historical progression backfill completed for user %s: +%d XP.", uid, seeded)
+    return token
 async def poll_one(ch,g,uid,u,gu,request_cache=None):
     previous_failures=gu.get("consecutive_failures",0)
     await storage.update_poll_health(g,uid,last_poll_at=now_iso(),flush=False)
@@ -787,6 +835,13 @@ async def poll_one(ch,g,uid,u,gu,request_cache=None):
         except Exception:
             log.warning("Profile lookup failed for %s.",uid)
     profile=simkl_profile_url(u.get("simkl_account_id"))
+    try:
+        token=await seed_progression_history(uid,u,token,request_cache)
+    except Exception as exc:
+        error=f"progression history seed: {type(exc).__name__}: {exc}"
+        await mark_poll_failure(g,uid,error,previous_failures)
+        log.error("Could not backfill progression history for user %s: %s: %s",uid,type(exc).__name__,exc)
+        return 0
     progression_before_poll=await storage.get_progression(uid)
     last=await storage.get_last_checked(g,uid)
     posted=0
