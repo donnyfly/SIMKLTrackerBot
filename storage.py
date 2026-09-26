@@ -786,6 +786,7 @@ class Storage:
                 personal = {
                     "embed_preferences": copy.deepcopy(existing.get("embed_preferences", DEFAULT_EMBED_PREFERENCES)),
                     "embed_preferences_custom": existing.get("embed_preferences_custom", False),
+                    "progression": copy.deepcopy(existing.get("progression", {"xp": 0, "lifetime_xp": 0, "prestige": 0, "watch_xp_keys": {}, "xp_events": [], "challenge_completions": {}})),
                 }
             else:
                 personal = {
