@@ -1057,7 +1057,10 @@ async def notify_level_up(guild_id_value, uid, before_progression, after_progres
     member = guild.get_member(int(uid)) if guild else None
     mention = member.mention if member else f"<@{uid}>"
     rank = rank_for_level(after_level)
-    await channel.send(f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**")
+    try:
+        await channel.send(f"🎉 {mention} just leveled up to **Level {after_level}!** **{rank}**")
+    except Exception:
+        log.exception("Failed to send level-up notification for user %s in guild %s.", uid, guild_id_value)
 
 def stats_total(statistics):
     return int(statistics.get("episodes_watched",0))+int(statistics.get("movies_watched",0))
